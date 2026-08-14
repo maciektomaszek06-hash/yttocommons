@@ -124,7 +124,7 @@ def download_media(url, media_type, timestamp=None):
     ydl_opts = {
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'ios', 'tv_embedded']
+                'player_client': ['android_vr', 'tv']
             }
         },
         'nocheckcertificate': True,
@@ -164,7 +164,10 @@ def download_media(url, media_type, timestamp=None):
             'skip_download': True
         })
 
-    if COOKIE_FILE:
+    # Sprawdzenie obecności pliku cookies.txt w projekcie lub w /tmp
+    if os.path.exists('cookies.txt'):
+        ydl_opts['cookiefile'] = 'cookies.txt'
+    elif COOKIE_FILE and os.path.exists(COOKIE_FILE):
         ydl_opts['cookiefile'] = COOKIE_FILE
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -205,7 +208,7 @@ def download_media(url, media_type, timestamp=None):
                 os.rename(downloaded_file, final_filename)
                 downloaded_file = final_filename
 
-        # Dynamiczny wybór licencji (od 1 sierpnia 2025 r. CC BY-4.0)
+        # Wybór licencji (CC-BY-4.0 od 1 sierpnia 2025 r.)
         upload_date = info.get('upload_date', '')
         if upload_date and upload_date >= '20250801':
             license_tag = '{{YouTube CC-BY-4.0}}'
