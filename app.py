@@ -122,17 +122,20 @@ def handle_upload():
         return jsonify({'error': str(e)}), 500
 
 def download_media(url, media_type, timestamp=None):
+    # Wykluczamy klienta 'web' i używamy wyłącznie klientów mobilnych/wbudowanych, 
+    # które nie wyzwalają blokady botowej na adresach IP serwerowni.
     ydl_opts = {
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'mweb', 'web']
+                'player_client': ['mweb', 'ios', 'tv_embedded']
             }
-        }
+        },
+        'nocheckcertificate': True,
+        'prefer_insecure': True
     }
     ext = ""
     
     if media_type == 'video':
-        # Elastyczny wybór formatu + automatyczna konwersja do WebM przez FFmpeg
         ydl_opts.update({
             'format': 'bv*+ba/b/best',
             'postprocessors': [{
@@ -143,9 +146,9 @@ def download_media(url, media_type, timestamp=None):
         })
         ext = "webm"
     elif media_type == 'audio':
-        # Pobieranie najlepszego audio i konwersja do OGG Vorbis
+        # Pobieramy dowolny dostępny strumień audio i konwertujemy do OGG Vorbis
         ydl_opts.update({
-            'format': 'ba/b/best',
+            'format': 'bestaudio/ba/b/best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'vorbis'
@@ -160,7 +163,6 @@ def download_media(url, media_type, timestamp=None):
             'outtmpl': '%(id)s'
         })
     elif media_type == 'frame':
-        # Pobieramy strumień z elastycznym formatem do wyciągnięcia klatki
         ydl_opts.update({
             'format': 'b/bv*/best',
             'skip_download': True
@@ -175,10 +177,8 @@ def download_media(url, media_type, timestamp=None):
         safe_title = "".join([c for c in title_base if c.isalnum() or c == ' ']).rstrip().replace(" ", "_")
         
         if media_type == 'frame':
-            # Pobieramy bezpośredni adres URL strumienia
             stream_url = info.get('url')
             if not stream_url and 'formats' in info:
-                # Wybór ostatniego dostępnego formatu wideo
                 video_formats = [f['url'] for f in info['formats'] if f.get('url')]
                 if video_formats:
                     stream_url = video_formats[-1]
@@ -203,11 +203,12 @@ def download_media(url, media_type, timestamp=None):
             downloaded_file = final_filename
             
         else:
+            # Dla wideo i audio yt-dlp po konwersji przez FFmpeg zapisuje plik z nowym rozszerzeniem
             downloaded_file = f"{info['id']}.{ext}"
             final_filename = f"{safe_title}.{ext}"
             if os.path.exists(downloaded_file) and downloaded_file != final_filename:
                 os.rename(downloaded_file, final_filename)
-            downloaded_file = final_filename
+                downloaded_file = final_filename
 
         # Dynamiczny wybór licencji (od 1 sierpnia 2025 r. CC BY-4.0)
         upload_date = info.get('upload_date', '')
