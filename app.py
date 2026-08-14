@@ -52,7 +52,7 @@ def check_license():
         return jsonify({'is_cc': False, 'error': 'Missing URL.'})
     
     try:
-        ydl_opts = {'quiet': True, 'skip_download': True}
+        ydl_opts = {'quiet': True, 'skip_download': True,'cookiefile': 'www.youtube.com_cookies.txt'}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             license_info = info.get('license', '')
@@ -102,7 +102,7 @@ def download_media(url, media_type, timestamp=None):
         ydl_opts = {'skip_download': True, 'writethumbnail': True}
     elif media_type == 'frame':
         ydl_opts = {'format': 'bestvideo', 'skip_download': True}
-
+    ydl_opts['cookiefile'] = 'www.youtube.com_cookies.txt'
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=(media_type in ['video', 'audio', 'thumbnail']))
         title_base = info.get('title', 'media')
