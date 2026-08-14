@@ -20,8 +20,8 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 oauth = OAuth(app)
 wikimedia = oauth.register(
     name='wikimedia',
-    client_id='3767b334a535794d93f0911f29590b96',
-    client_secret='504caa405e8edd8026b65166ffd017da16584336',
+    client_id='TUTAJ_CLIENT_ID',
+    client_secret='TUTAJ_CLIENT_SECRET',
     access_token_url='https://meta.wikimedia.org/w/rest.php/oauth2/access_token',
     authorize_url='https://meta.wikimedia.org/w/rest.php/oauth2/authorize',
     api_base_url='https://commons.wikimedia.org/w/api.php'
@@ -49,6 +49,7 @@ def auth():
 def logout():
     session.pop('wiki_token', None)
     return redirect(url_for('index'))
+
 @app.route('/check', methods=['POST'])
 def check_license():
     """Weryfikuje, czy film posiada licencję Creative Commons."""
@@ -61,11 +62,11 @@ def check_license():
             'quiet': True,
             'skip_download': True,
             'noplaylist': True,
-            'ignore_no_formats_error': True,  # Ignoruje sprawdzanie formatów
-            'check_formats': False,           # Wyłącza testowanie strumieni
+            'ignore_no_formats_error': True,
+            'check_formats': False,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'mweb', 'web']
+                    'player_client': ['mweb', 'ios', 'tv_embedded']
                 }
             }
         }
@@ -78,8 +79,6 @@ def check_license():
                 return jsonify({'is_cc': False, 'error': 'Failed to extract video info.'})
 
             license_info = info.get('license', '')
-            
-            # W niektórych wersjach yt-dlp licencja może być zapisana w opisie lub tagach
             description = info.get('description', '')
             
             is_creative_commons = False
@@ -122,8 +121,6 @@ def handle_upload():
         return jsonify({'error': str(e)}), 500
 
 def download_media(url, media_type, timestamp=None):
-    # Wykluczamy klienta 'web' i używamy wyłącznie klientów mobilnych/wbudowanych, 
-    # które nie wyzwalają blokady botowej na adresach IP serwerowni.
     ydl_opts = {
         'extractor_args': {
             'youtube': {
@@ -135,9 +132,9 @@ def download_media(url, media_type, timestamp=None):
     }
     ext = ""
     
-   if media_type == 'video':
+    if media_type == 'video':
         ydl_opts.update({
-            'format': 'bestvideo+bestaudio/best',
+            'format': 'bv*+ba/b/best',
             'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
                 'preferedformat': 'webm'
@@ -146,8 +143,6 @@ def download_media(url, media_type, timestamp=None):
         })
         ext = "webm"
     elif media_type == 'audio':
-        # Pobiera dowolny najlepszy strumień z dźwiękiem (nawet z wideo), 
-        # a FFmpeg sam wytnie z niego audio i przekonwertuje do Vorbis (.ogg)
         ydl_opts.update({
             'format': 'ba*/b/best',
             'postprocessors': [{
@@ -204,7 +199,6 @@ def download_media(url, media_type, timestamp=None):
             downloaded_file = final_filename
             
         else:
-            # Dla wideo i audio yt-dlp po konwersji przez FFmpeg zapisuje plik z nowym rozszerzeniem
             downloaded_file = f"{info['id']}.{ext}"
             final_filename = f"{safe_title}.{ext}"
             if os.path.exists(downloaded_file) and downloaded_file != final_filename:
