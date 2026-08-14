@@ -18,7 +18,7 @@ wikimedia = oauth.register(
     access_token_url='https://meta.wikimedia.org/w/rest.php/oauth2/access_token',
     authorize_url='https://meta.wikimedia.org/w/rest.php/oauth2/authorize',
     api_base_url='https://commons.wikimedia.org/w/api.php',
-    client_kwargs={'scope': 'edit upload'}
+    
 )
 
 API_URL = "https://commons.wikimedia.org/w/api.php"
