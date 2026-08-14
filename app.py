@@ -20,14 +20,19 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 oauth = OAuth(app)
 wikimedia = oauth.register(
     name='wikimedia',
-    client_id='3767b334a535794d93f0911f29590b96',
-    client_secret='504caa405e8edd8026b65166ffd017da16584336',
+    client_id='TUTAJ_WKLEJ_SWOJ_CLIENT_ID',        # <--- Pamiętaj o wklejeniu klucza!
+    client_secret='TUTAJ_WKLEJ_SWOJ_CLIENT_SECRET', # <--- Pamiętaj o wklejeniu nowego sekretu!
     access_token_url='https://meta.wikimedia.org/w/rest.php/oauth2/access_token',
     authorize_url='https://meta.wikimedia.org/w/rest.php/oauth2/authorize',
     api_base_url='https://commons.wikimedia.org/w/api.php'
 )
 
 API_URL = "https://commons.wikimedia.org/w/api.php"
+
+# Pomocnicza ścieżka do lokalnego pliku cookies na serwerze (jeśli wgrasz go bezpośrednio na GitHub)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOCAL_COOKIE_PATH = os.path.join(BASE_DIR, 'cookies.txt')
+
 
 @app.route('/')
 def index():
@@ -64,13 +69,18 @@ def check_license():
             'noplaylist': True,
             'ignore_no_formats_error': True,
             'check_formats': False,
+            'source_address': '0.0.0.0', # WYMUSZENIE IPv4 (Ochrona przed banami adresów IPv6)
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['mweb', 'ios', 'tv_embedded']
+                    'player_client': ['android_vr', 'tv', 'ios']
                 }
             }
         }
-        if COOKIE_FILE:
+        
+        # Ładowanie ciasteczek (priorytet dla pliku wgranego na GitHub)
+        if os.path.exists(LOCAL_COOKIE_PATH):
+            ydl_opts['cookiefile'] = LOCAL_COOKIE_PATH
+        elif COOKIE_FILE and os.path.exists(COOKIE_FILE):
             ydl_opts['cookiefile'] = COOKIE_FILE
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -122,9 +132,10 @@ def handle_upload():
 
 def download_media(url, media_type, timestamp=None):
     ydl_opts = {
+        'source_address': '0.0.0.0', # WYMUSZENIE IPv4 (Kluczowe na serwerach Render)
         'extractor_args': {
             'youtube': {
-                'player_client': ['android_vr', 'tv']
+                'player_client': ['android_vr', 'tv', 'ios']
             }
         },
         'nocheckcertificate': True,
@@ -164,9 +175,9 @@ def download_media(url, media_type, timestamp=None):
             'skip_download': True
         })
 
-    # Sprawdzenie obecności pliku cookies.txt w projekcie lub w /tmp
-    if os.path.exists('cookies.txt'):
-        ydl_opts['cookiefile'] = 'cookies.txt'
+    # Ładowanie ciasteczek (priorytet dla pliku wgranego na GitHub)
+    if os.path.exists(LOCAL_COOKIE_PATH):
+        ydl_opts['cookiefile'] = LOCAL_COOKIE_PATH
     elif COOKIE_FILE and os.path.exists(COOKIE_FILE):
         ydl_opts['cookiefile'] = COOKIE_FILE
 
