@@ -118,15 +118,39 @@ def download_media(url, media_type, timestamp=None):
     ext = ""
     
     if media_type == 'video':
-        ydl_opts.update({'format': 'bestvideo+bestaudio/best', 'merge_output_format': 'webm'})
+        # Elastyczny wybór formatu + automatyczna konwersja do WebM przez FFmpeg
+        ydl_opts.update({
+            'format': 'bv*+ba/b/best',
+            'postprocessors': [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'webm'
+            }],
+            'outtmpl': '%(id)s.%(ext)s'
+        })
         ext = "webm"
     elif media_type == 'audio':
-        ydl_opts.update({'format': 'bestaudio/best', 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'vorbis'}]})
+        # Pobieranie najlepszego audio i konwersja do OGG Vorbis
+        ydl_opts.update({
+            'format': 'ba/b/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'vorbis'
+            }],
+            'outtmpl': '%(id)s.%(ext)s'
+        })
         ext = "ogg"
     elif media_type == 'thumbnail':
-        ydl_opts.update({'skip_download': True, 'writethumbnail': True})
+        ydl_opts.update({
+            'skip_download': True, 
+            'writethumbnail': True,
+            'outtmpl': '%(id)s'
+        })
     elif media_type == 'frame':
-        ydl_opts.update({'format': 'bestvideo', 'skip_download': True})
+        # Pobieramy strumień z elastycznym formatem do wyciągnięcia klatki
+        ydl_opts.update({
+            'format': 'b/bv*/best',
+            'skip_download': True
+        })
 
     if COOKIE_FILE:
         ydl_opts['cookiefile'] = COOKIE_FILE
@@ -137,11 +161,17 @@ def download_media(url, media_type, timestamp=None):
         safe_title = "".join([c for c in title_base if c.isalnum() or c == ' ']).rstrip().replace(" ", "_")
         
         if media_type == 'frame':
-            # Pobieramy bezpośredni adres strumienia i wyciągamy jedną klatkę przez FFmpeg
+            # Pobieramy bezpośredni adres URL strumienia
             stream_url = info.get('url')
             if not stream_url and 'formats' in info:
-                stream_url = info['formats'][-1]['url']
+                # Wybór ostatniego dostępnego formatu wideo
+                video_formats = [f['url'] for f in info['formats'] if f.get('url')]
+                if video_formats:
+                    stream_url = video_formats[-1]
             
+            if not stream_url:
+                raise Exception("Nie udało się uzyskać bezpośredniego strumienia wideo.")
+
             ext = 'jpg'
             final_filename = f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
             cmd = ['ffmpeg', '-ss', str(timestamp), '-i', stream_url, '-vframes', '1', '-q:v', '2', final_filename, '-y']
@@ -149,7 +179,7 @@ def download_media(url, media_type, timestamp=None):
             downloaded_file = final_filename
             
         elif media_type == 'thumbnail':
-            downloaded_file = next((f for f in os.listdir('.') if f.startswith(info['id']) or info['id'] in f), None)
+            downloaded_file = next((f for f in os.listdir('.') if f.startswith(info['id']) and f.endswith(('.jpg', '.webp', '.png'))), None)
             if not downloaded_file:
                 downloaded_file = next((f for f in os.listdir('.') if f.endswith(('.jpg', '.webp', '.png'))), None)
             ext = downloaded_file.split('.')[-1] if downloaded_file else 'jpg'
@@ -163,9 +193,9 @@ def download_media(url, media_type, timestamp=None):
             final_filename = f"{safe_title}.{ext}"
             if os.path.exists(downloaded_file) and downloaded_file != final_filename:
                 os.rename(downloaded_file, final_filename)
-                downloaded_file = final_filename
+            downloaded_file = final_filename
 
-        # Dynamiczny dobór licencji (przejście na CC-BY-4.0 od 1 sierpnia 2025 r.)
+        # Dynamiczny wybór licencji (od 1 sierpnia 2025 r. CC BY-4.0)
         upload_date = info.get('upload_date', '')
         if upload_date and upload_date >= '20250801':
             license_tag = '{{YouTube CC-BY-4.0}}'
