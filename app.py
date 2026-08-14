@@ -135,9 +135,9 @@ def download_media(url, media_type, timestamp=None):
     }
     ext = ""
     
-    if media_type == 'video':
+   if media_type == 'video':
         ydl_opts.update({
-            'format': 'bv*+ba/b/best',
+            'format': 'bestvideo+bestaudio/best',
             'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
                 'preferedformat': 'webm'
@@ -146,9 +146,10 @@ def download_media(url, media_type, timestamp=None):
         })
         ext = "webm"
     elif media_type == 'audio':
-        # Pobieramy dowolny dostępny strumień audio i konwertujemy do OGG Vorbis
+        # Pobiera dowolny najlepszy strumień z dźwiękiem (nawet z wideo), 
+        # a FFmpeg sam wytnie z niego audio i przekonwertuje do Vorbis (.ogg)
         ydl_opts.update({
-            'format': 'bestaudio/ba/b/best',
+            'format': 'ba*/b/best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'vorbis'
