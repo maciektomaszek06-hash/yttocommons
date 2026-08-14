@@ -6,6 +6,13 @@ from flask import Flask, render_template, request, redirect, url_for, session, j
 from authlib.integrations.flask_client import OAuth
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+
+# Bezpieczne ładowanie ciasteczek ze zmiennych środowiskowych Render
+COOKIE_FILE = None
+if 'YOUTUBE_COOKIES' in os.environ:
+    COOKIE_FILE = '/tmp/youtube_cookies.txt'
+    with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
+        f.write(os.environ['YOUTUBE_COOKIES'])
 app = Flask(__name__)
 app.secret_key = 'strong_random_session_secret'
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -52,7 +59,11 @@ def check_license():
         return jsonify({'is_cc': False, 'error': 'Missing URL.'})
     
     try:
-        ydl_opts = {'quiet': True, 'skip_download': True,'cookiefile': 'www.youtube.com_cookies.txt'}
+        ydl_opts = {
+            'quiet': True, 
+            'skip_download': True,
+            'cookiefile': COOKIE_FILE
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             license_info = info.get('license', '')
@@ -101,8 +112,14 @@ def download_media(url, media_type, timestamp=None):
     elif media_type == 'thumbnail':
         ydl_opts = {'skip_download': True, 'writethumbnail': True}
     elif media_type == 'frame':
-        ydl_opts = {'format': 'bestvideo', 'skip_download': True}
-    ydl_opts['cookiefile'] = 'www.youtube.com_cookies.txt'
+            stream_url = info['url']
+            ext = 'jpg'
+            downloaded_file = f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
+            cmd = ['ffmpeg', '-ss', str(timestamp), '-i', stream_url, '-vframes', '1', '-q:v', '2', downloaded_file, '-y']
+            subprocess.run(cmd, check=True)
+            final_filename = downloaded_file
+    if COOKIE_FILE:
+        ydl_opts['cookiefile'] = COOKIE_FILE
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=(media_type in ['video', 'audio', 'thumbnail']))
         title_base = info.get('title', 'media')
