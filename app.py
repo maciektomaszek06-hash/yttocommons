@@ -49,7 +49,6 @@ def auth():
 def logout():
     session.pop('wiki_token', None)
     return redirect(url_for('index'))
-
 @app.route('/check', methods=['POST'])
 def check_license():
     """Weryfikuje, czy film posiada licencję Creative Commons."""
@@ -61,7 +60,9 @@ def check_license():
         ydl_opts = {
             'quiet': True,
             'skip_download': True,
-            # Emulacja klientów mobilnych/wbudowanych, aby ominąć blokadę bota na Render
+            'noplaylist': True,
+            'ignore_no_formats_error': True,  # Ignoruje sprawdzanie formatów
+            'check_formats': False,           # Wyłącza testowanie strumieni
             'extractor_args': {
                 'youtube': {
                     'player_client': ['android', 'ios', 'mweb', 'web']
@@ -73,15 +74,28 @@ def check_license():
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            if not info:
+                return jsonify({'is_cc': False, 'error': 'Failed to extract video info.'})
+
             license_info = info.get('license', '')
             
-            if not license_info:
-                return jsonify({'is_cc': False, 'error': 'No license found in the description. It is probably a standard YouTube license (not allowed on Commons).'})
+            # W niektórych wersjach yt-dlp licencja może być zapisana w opisie lub tagach
+            description = info.get('description', '')
             
-            if 'Creative Commons' in license_info or 'Attribution' in license_info:
+            is_creative_commons = False
+            if license_info and ('Creative Commons' in license_info or 'Attribution' in license_info):
+                is_creative_commons = True
+            elif 'Creative Commons' in description or 'CC BY' in description:
+                is_creative_commons = True
+
+            if is_creative_commons:
                 return jsonify({'is_cc': True, 'title': info.get('title'), 'id': info.get('id')})
             
+            if not license_info:
+                return jsonify({'is_cc': False, 'error': 'No Creative Commons license detected (standard YouTube license is not allowed on Commons).'})
+            
             return jsonify({'is_cc': False, 'error': f'Invalid license: {license_info}'})
+            
     except Exception as e:
         return jsonify({'is_cc': False, 'error': str(e)})
 
