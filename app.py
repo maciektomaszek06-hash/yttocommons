@@ -13,8 +13,8 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 oauth = OAuth(app)
 wikimedia = oauth.register(
     name='wikimedia',
-    client_id='YOUR_CLIENT_ID_HERE',
-    client_secret='YOUR_CLIENT_SECRET_HERE',
+    client_id='d105f1600547ade70b1b24629124d605 ',
+    client_secret='224ac1839c1a948c70af188d3e2cb25c637077a3',
     access_token_url='https://meta.wikimedia.org/w/rest.php/oauth2/access_token',
     authorize_url='https://meta.wikimedia.org/w/rest.php/oauth2/authorize',
     api_base_url='https://commons.wikimedia.org/w/api.php',
