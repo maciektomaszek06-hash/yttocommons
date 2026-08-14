@@ -131,17 +131,26 @@ def download_media(url, media_type, timestamp=None):
                 os.rename(downloaded_file, final_filename)
                 downloaded_file = final_filename
 
+        # --- LOGIKA WYBORU WERSJI LICENCJI ---
+        upload_date = info.get('upload_date', '')
+        
+        # Jeśli data publikacji to 1 sierpnia 2025 (20250801) lub później, używamy CC BY 4.0
+        if upload_date and upload_date >= '20250801':
+            license_tag = '{{YouTube CC-BY-4.0}}'
+        else:
+            license_tag = '{{YouTube CC-BY}}'
+
         description = (
             "== {{int:filedesc}} ==\n"
             "{{Information\n"
             f"|description={info.get('description', 'Downloaded from YouTube')}\n"
-            f"|date={info.get('upload_date', '')}\n"
+            f"|date={upload_date}\n"
             f"|source={url}\n"
             f"|author={info.get('uploader', 'Unknown')}\n"
-            "|permission={{YouTube CC-BY}}\n"
+            f"|permission={license_tag}\n"
             "}}\n"
             "== {{int:license-header}} ==\n"
-            "{{YouTube CC-BY}}\n"
+            f"{license_tag}\n"
             "{{LicenseReview}}"
         )
         return downloaded_file, final_filename, description
