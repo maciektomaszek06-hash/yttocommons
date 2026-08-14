@@ -6,13 +6,6 @@ from flask import Flask, render_template, request, redirect, url_for, session, j
 from authlib.integrations.flask_client import OAuth
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-# Bezpieczne ładowanie ciasteczek ze zmiennych środowiskowych Render (jeśli istnieją)
-COOKIE_FILE = None
-if 'YOUTUBE_COOKIES' in os.environ and os.environ['YOUTUBE_COOKIES'].strip():
-    COOKIE_FILE = '/tmp/youtube_cookies.txt'
-    with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
-        f.write(os.environ['YOUTUBE_COOKIES'])
-
 app = Flask(__name__)
 app.secret_key = 'strong_random_session_secret'
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -20,20 +13,14 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 oauth = OAuth(app)
 wikimedia = oauth.register(
     name='wikimedia',
-    client_id='3767b334a535794d93f0911f29590b96',
-
-    client_secret='504caa405e8edd8026b65166ffd017da16584336', # <--- Pamiętaj o wklejeniu nowego sekretu!
+    client_id='TUTAJ_WKLEJ_SWOJ_NOWY_CLIENT_ID',        # <--- Pamiętaj o wklejeniu klucza!
+    client_secret='TUTAJ_WKLEJ_SWOJ_NOWY_CLIENT_SECRET', # <--- Pamiętaj o wklejeniu nowego sekretu!
     access_token_url='https://meta.wikimedia.org/w/rest.php/oauth2/access_token',
     authorize_url='https://meta.wikimedia.org/w/rest.php/oauth2/authorize',
     api_base_url='https://commons.wikimedia.org/w/api.php'
 )
 
 API_URL = "https://commons.wikimedia.org/w/api.php"
-
-# Pomocnicza ścieżka do lokalnego pliku cookies na serwerze (jeśli wgrasz go bezpośrednio na GitHub)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOCAL_COOKIE_PATH = os.path.join(BASE_DIR, 'cookies.txt')
-
 
 @app.route('/')
 def index():
@@ -70,19 +57,13 @@ def check_license():
             'noplaylist': True,
             'ignore_no_formats_error': True,
             'check_formats': False,
-            'source_address': '0.0.0.0', # WYMUSZENIE IPv4 (Ochrona przed banami adresów IPv6)
+            'source_address': '0.0.0.0', # WYMUSZENIE IPv4
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android_vr', 'tv', 'ios']
+                    'player_client': ['ios', 'android_vr'] # Omijanie BotGuarda
                 }
             }
         }
-        
-        # Ładowanie ciasteczek (priorytet dla pliku wgranego na GitHub)
-        if os.path.exists(LOCAL_COOKIE_PATH):
-            ydl_opts['cookiefile'] = LOCAL_COOKIE_PATH
-        elif COOKIE_FILE and os.path.exists(COOKIE_FILE):
-            ydl_opts['cookiefile'] = COOKIE_FILE
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -133,10 +114,10 @@ def handle_upload():
 
 def download_media(url, media_type, timestamp=None):
     ydl_opts = {
-        'source_address': '0.0.0.0', # WYMUSZENIE IPv4 (Kluczowe na serwerach Render)
+        'source_address': '0.0.0.0', # WYMUSZENIE IPv4
         'extractor_args': {
             'youtube': {
-                'player_client': ['android_vr', 'tv', 'ios']
+                'player_client': ['ios', 'android_vr'] # Omijanie BotGuarda
             }
         },
         'nocheckcertificate': True,
@@ -176,12 +157,6 @@ def download_media(url, media_type, timestamp=None):
             'skip_download': True
         })
 
-    # Ładowanie ciasteczek (priorytet dla pliku wgranego na GitHub)
-    if os.path.exists(LOCAL_COOKIE_PATH):
-        ydl_opts['cookiefile'] = LOCAL_COOKIE_PATH
-    elif COOKIE_FILE and os.path.exists(COOKIE_FILE):
-        ydl_opts['cookiefile'] = COOKIE_FILE
-
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=(media_type in ['video', 'audio', 'thumbnail']))
         title_base = info.get('title', 'media')
@@ -220,7 +195,7 @@ def download_media(url, media_type, timestamp=None):
                 os.rename(downloaded_file, final_filename)
                 downloaded_file = final_filename
 
-        # Wybór licencji (CC-BY-4.0 od 1 sierpnia 2025 r.)
+        # Dynamiczny dobór licencji (przejście na CC-BY-4.0 od 1 sierpnia 2025 r.)
         upload_date = info.get('upload_date', '')
         if upload_date and upload_date >= '20250801':
             license_tag = '{{YouTube CC-BY-4.0}}'
