@@ -6,13 +6,13 @@ from flask import Flask, render_template, request, redirect, url_for, session, j
 from authlib.integrations.flask_client import OAuth
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-
-# Bezpieczne ładowanie ciasteczek ze zmiennych środowiskowych Render
+# Bezpieczne ładowanie ciasteczek ze zmiennych środowiskowych Render (jeśli istnieją)
 COOKIE_FILE = None
-if 'YOUTUBE_COOKIES' in os.environ:
+if 'YOUTUBE_COOKIES' in os.environ and os.environ['YOUTUBE_COOKIES'].strip():
     COOKIE_FILE = '/tmp/youtube_cookies.txt'
     with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
         f.write(os.environ['YOUTUBE_COOKIES'])
+
 app = Flask(__name__)
 app.secret_key = 'strong_random_session_secret'
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -24,8 +24,7 @@ wikimedia = oauth.register(
     client_secret='504caa405e8edd8026b65166ffd017da16584336',
     access_token_url='https://meta.wikimedia.org/w/rest.php/oauth2/access_token',
     authorize_url='https://meta.wikimedia.org/w/rest.php/oauth2/authorize',
-    api_base_url='https://commons.wikimedia.org/w/api.php',
-    
+    api_base_url='https://commons.wikimedia.org/w/api.php'
 )
 
 API_URL = "https://commons.wikimedia.org/w/api.php"
@@ -53,17 +52,25 @@ def logout():
 
 @app.route('/check', methods=['POST'])
 def check_license():
-    """Verifies if the video has a Creative Commons license."""
+    """Weryfikuje, czy film posiada licencję Creative Commons."""
     url = request.json.get('url')
     if not url:
         return jsonify({'is_cc': False, 'error': 'Missing URL.'})
     
     try:
         ydl_opts = {
-            'quiet': True, 
+            'quiet': True,
             'skip_download': True,
-            'cookiefile': COOKIE_FILE
+            # Emulacja klientów mobilnych/wbudowanych, aby ominąć blokadę bota na Render
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'ios', 'mweb', 'web']
+                }
+            }
         }
+        if COOKIE_FILE:
+            ydl_opts['cookiefile'] = COOKIE_FILE
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             license_info = info.get('license', '')
@@ -94,64 +101,72 @@ def handle_upload():
     try:
         downloaded_file, safe_title, description = download_media(yt_url, media_type, timestamp)
         commons_url = upload_to_commons(downloaded_file, safe_title, description, token)
-        os.remove(downloaded_file)
+        if os.path.exists(downloaded_file):
+            os.remove(downloaded_file)
         return jsonify({'success': True, 'url': commons_url})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 def download_media(url, media_type, timestamp=None):
-    ydl_opts = {}
+    ydl_opts = {
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'mweb', 'web']
+            }
+        }
+    }
     ext = ""
     
     if media_type == 'video':
-        ydl_opts = {'format': 'bestvideo+bestaudio/best', 'merge_output_format': 'webm'}
+        ydl_opts.update({'format': 'bestvideo+bestaudio/best', 'merge_output_format': 'webm'})
         ext = "webm"
     elif media_type == 'audio':
-        ydl_opts = {'format': 'bestaudio/best', 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'vorbis'}]}
+        ydl_opts.update({'format': 'bestaudio/best', 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'vorbis'}]})
         ext = "ogg"
     elif media_type == 'thumbnail':
-        ydl_opts = {'skip_download': True, 'writethumbnail': True}
+        ydl_opts.update({'skip_download': True, 'writethumbnail': True})
     elif media_type == 'frame':
-            stream_url = info['url']
-            ext = 'jpg'
-            downloaded_file = f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
-            cmd = ['ffmpeg', '-ss', str(timestamp), '-i', stream_url, '-vframes', '1', '-q:v', '2', downloaded_file, '-y']
-            subprocess.run(cmd, check=True)
-            final_filename = downloaded_file
+        ydl_opts.update({'format': 'bestvideo', 'skip_download': True})
+
     if COOKIE_FILE:
         ydl_opts['cookiefile'] = COOKIE_FILE
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=(media_type in ['video', 'audio', 'thumbnail']))
         title_base = info.get('title', 'media')
-        
-        safe_title = "".join([c for c in title_base if c.isalpha() or c.isdigit() or c==' ']).rstrip().replace(" ", "_")
+        safe_title = "".join([c for c in title_base if c.isalnum() or c == ' ']).rstrip().replace(" ", "_")
         
         if media_type == 'frame':
-            stream_url = info['url']
+            # Pobieramy bezpośredni adres strumienia i wyciągamy jedną klatkę przez FFmpeg
+            stream_url = info.get('url')
+            if not stream_url and 'formats' in info:
+                stream_url = info['formats'][-1]['url']
+            
             ext = 'jpg'
-            downloaded_file = f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
-            cmd = ['ffmpeg', '-ss', str(timestamp), '-i', stream_url, '-vframes', '1', '-q:v', '2', downloaded_file, '-y']
+            final_filename = f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
+            cmd = ['ffmpeg', '-ss', str(timestamp), '-i', stream_url, '-vframes', '1', '-q:v', '2', final_filename, '-y']
             subprocess.run(cmd, check=True)
-            final_filename = downloaded_file
+            downloaded_file = final_filename
+            
         elif media_type == 'thumbnail':
             downloaded_file = next((f for f in os.listdir('.') if f.startswith(info['id']) or info['id'] in f), None)
             if not downloaded_file:
-                 downloaded_file = next((f for f in os.listdir('.') if f.endswith(('.jpg', '.webp'))), None)
-            ext = downloaded_file.split('.')[-1]
+                downloaded_file = next((f for f in os.listdir('.') if f.endswith(('.jpg', '.webp', '.png'))), None)
+            ext = downloaded_file.split('.')[-1] if downloaded_file else 'jpg'
             final_filename = f"{safe_title}_thumb.{ext}"
-            os.rename(downloaded_file, final_filename)
+            if downloaded_file and downloaded_file != final_filename:
+                os.rename(downloaded_file, final_filename)
             downloaded_file = final_filename
+            
         else:
             downloaded_file = f"{info['id']}.{ext}"
             final_filename = f"{safe_title}.{ext}"
-            if os.path.exists(downloaded_file):
+            if os.path.exists(downloaded_file) and downloaded_file != final_filename:
                 os.rename(downloaded_file, final_filename)
                 downloaded_file = final_filename
 
-        # --- LOGIKA WYBORU WERSJI LICENCJI ---
+        # Dynamiczny dobór licencji (przejście na CC-BY-4.0 od 1 sierpnia 2025 r.)
         upload_date = info.get('upload_date', '')
-        
-        # Jeśli data publikacji to 1 sierpnia 2025 (20250801) lub później, używamy CC BY 4.0
         if upload_date and upload_date >= '20250801':
             license_tag = '{{YouTube CC-BY-4.0}}'
         else:
@@ -179,7 +194,14 @@ def upload_to_commons(file_path, title, description, token):
     
     with open(file_path, 'rb') as f:
         files = {'file': (title, f, 'multipart/form-data')}
-        data = {'action': 'upload', 'filename': title, 'text': description, 'token': csrf_token, 'format': 'json', 'ignorewarnings': 1}
+        data = {
+            'action': 'upload',
+            'filename': title,
+            'text': description,
+            'token': csrf_token,
+            'format': 'json',
+            'ignorewarnings': 1
+        }
         response = requests.post(API_URL, files=files, data=data, headers=headers)
         result = response.json()
         
