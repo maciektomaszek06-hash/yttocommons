@@ -7,14 +7,14 @@ from authlib.integrations.flask_client import OAuth
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
-app.secret_key = 'silne_losowe_haslo_sesji'
+app.secret_key = 'strong_random_session_secret'
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 oauth = OAuth(app)
 wikimedia = oauth.register(
     name='wikimedia',
-    client_id='TUTAJ_WPISZ_CLIENT_ID',
-    client_secret='TUTAJ_WPISZ_CLIENT_SECRET',
+    client_id='YOUR_CLIENT_ID_HERE',
+    client_secret='YOUR_CLIENT_SECRET_HERE',
     access_token_url='https://meta.wikimedia.org/w/rest.php/oauth2/access_token',
     authorize_url='https://meta.wikimedia.org/w/rest.php/oauth2/authorize',
     api_base_url='https://commons.wikimedia.org/w/api.php',
@@ -46,25 +46,24 @@ def logout():
 
 @app.route('/check', methods=['POST'])
 def check_license():
-    """Weryfikuje, czy film posiada licencję Creative Commons."""
+    """Verifies if the video has a Creative Commons license."""
     url = request.json.get('url')
     if not url:
-        return jsonify({'is_cc': False, 'error': 'Brak linku URL.'})
+        return jsonify({'is_cc': False, 'error': 'Missing URL.'})
     
     try:
-        # skip_download sprawia, że yt-dlp tylko czyta informacje, co jest błyskawiczne
         ydl_opts = {'quiet': True, 'skip_download': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             license_info = info.get('license', '')
             
             if not license_info:
-                return jsonify({'is_cc': False, 'error': 'Brak licencji w opisie. Prawdopodobnie jest to standardowa licencja YouTube (zabroniona na Commons).'})
+                return jsonify({'is_cc': False, 'error': 'No license found in the description. It is probably a standard YouTube license (not allowed on Commons).'})
             
             if 'Creative Commons' in license_info or 'Attribution' in license_info:
                 return jsonify({'is_cc': True, 'title': info.get('title'), 'id': info.get('id')})
             
-            return jsonify({'is_cc': False, 'error': f'Nieprawidłowa licencja: {license_info}'})
+            return jsonify({'is_cc': False, 'error': f'Invalid license: {license_info}'})
     except Exception as e:
         return jsonify({'is_cc': False, 'error': str(e)})
 
@@ -72,14 +71,14 @@ def check_license():
 def handle_upload():
     token = session.get('wiki_token')
     if not token:
-        return jsonify({'error': 'Nie zalogowano.'}), 401
+        return jsonify({'error': 'Not logged in.'}), 401
 
     yt_url = request.form.get('url')
     media_type = request.form.get('type')
-    timestamp = request.form.get('timestamp') # Wymagane tylko dla klatki
+    timestamp = request.form.get('timestamp')
     
     if not yt_url or media_type not in ['video', 'audio', 'thumbnail', 'frame']:
-        return jsonify({'error': 'Brak wymaganych danych.'}), 400
+        return jsonify({'error': 'Missing required data.'}), 400
 
     try:
         downloaded_file, safe_title, description = download_media(yt_url, media_type, timestamp)
@@ -102,17 +101,15 @@ def download_media(url, media_type, timestamp=None):
     elif media_type == 'thumbnail':
         ydl_opts = {'skip_download': True, 'writethumbnail': True}
     elif media_type == 'frame':
-        ydl_opts = {'format': 'bestvideo', 'skip_download': True} # Pobieramy tylko link do strumienia
+        ydl_opts = {'format': 'bestvideo', 'skip_download': True}
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=(media_type in ['video', 'audio', 'thumbnail']))
         title_base = info.get('title', 'media')
         
-        # Filtrujemy tytuł, by był bezpieczny dla nazw plików w systemie
         safe_title = "".join([c for c in title_base if c.isalpha() or c.isdigit() or c==' ']).rstrip().replace(" ", "_")
         
         if media_type == 'frame':
-            # Używamy FFmpeg do pobrania 1 klatki bezpośrednio ze strumienia YouTube
             stream_url = info['url']
             ext = 'jpg'
             downloaded_file = f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
@@ -134,14 +131,13 @@ def download_media(url, media_type, timestamp=None):
                 os.rename(downloaded_file, final_filename)
                 downloaded_file = final_filename
 
-        # Szablon {{LicenseReview}} flaguje plik do manualnego sprawdzenia przez adminów
         description = (
             "== {{int:filedesc}} ==\n"
             "{{Information\n"
-            f"|description={info.get('description', 'Pobrane z YouTube')}\n"
+            f"|description={info.get('description', 'Downloaded from YouTube')}\n"
             f"|date={info.get('upload_date', '')}\n"
             f"|source={url}\n"
-            f"|author={info.get('uploader', 'Nieznany')}\n"
+            f"|author={info.get('uploader', 'Unknown')}\n"
             "|permission={{YouTube CC-BY}}\n"
             "}}\n"
             "== {{int:license-header}} ==\n"
