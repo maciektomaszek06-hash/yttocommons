@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: youtube-to-commons
+    env: docker
+    plan: starter
+    envVars:
+      - key: WIKI_ACCESS_TOKEN
+        sync: false
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: YOUTUBE_COOKIES_FILE
+        value: /etc/secrets/youtube_cookies.txt
