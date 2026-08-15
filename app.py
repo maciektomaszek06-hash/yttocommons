@@ -1,47 +1,49 @@
 import os
+import time
+import traceback
 import subprocess
 import requests
 import yt_dlp
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify
-from authlib.integrations.flask_client import OAuth
-from werkzeug.middleware.proxy_fix import ProxyFix
+from flask import Flask, render_template, request, jsonify
 
 app = Flask(__name__)
-app.secret_key = 'strong_random_session_secret'
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
-
-oauth = OAuth(app)
-wikimedia = oauth.register(
-    name='wikimedia',
-    client_id='TUTAJ_WKLEJ_SWOJ_NOWY_CLIENT_ID',        # <--- Pamiętaj o wklejeniu klucza!
-    client_secret='TUTAJ_WKLEJ_SWOJ_NOWY_CLIENT_SECRET', # <--- Pamiętaj o wklejeniu nowego sekretu!
-    access_token_url='https://meta.wikimedia.org/w/rest.php/oauth2/access_token',
-    authorize_url='https://meta.wikimedia.org/w/rest.php/oauth2/authorize',
-    api_base_url='https://commons.wikimedia.org/w/api.php'
-)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strong_random_session_secret_for_local_use')
 
 API_URL = "https://commons.wikimedia.org/w/api.php"
 
+# --- OWNER-ONLY OAUTH TOKEN ---
+# Konsument jest zarejestrowany jako "owner-only", więc nie ma flow z przekierowaniem
+# przez przeglądarkę (login/callback). Token jest stały i pobierany ze zmiennej
+# środowiskowej WIKI_ACCESS_TOKEN.
+#
+# Lokalnie (PowerShell):
+#   $env:WIKI_ACCESS_TOKEN = "twoj_token_tutaj"
+#   python app.py
+#
+# Na Render: ustaw WIKI_ACCESS_TOKEN w panelu Environment (nie w kodzie, nie w repo).
+WIKI_ACCESS_TOKEN = os.environ.get('WIKI_ACCESS_TOKEN')
+
+if not WIKI_ACCESS_TOKEN:
+    print("!!! UWAGA: Brak WIKI_ACCESS_TOKEN. Ustaw zmienną środowiskową,")
+    print("!!! inaczej upload do Commons nie zadziała.")
+else:
+    print("DOTS:", WIKI_ACCESS_TOKEN.count('.'))
+    print("LEN:", len(WIKI_ACCESS_TOKEN))
+
+# Plik cookies eksportowany rozszerzeniem "Get cookies.txt LOCALLY" z youtube.com.
+# Lokalnie: musi leżeć obok tego pliku app.py.
+# Na Render: wgraj go jako "Secret File" pod tą samą ścieżką (patrz README.md).
+COOKIES_FILE = os.environ.get('YOUTUBE_COOKIES_FILE', 'youtube_cookies.txt')
+
+# Kolejność klientów YouTube do wypróbowania.
+PLAYER_CLIENTS = ['mweb', 'android', 'web']
+
+
 @app.route('/')
 def index():
-    token = session.get('wiki_token')
-    return render_template('index.html', logged_in=bool(token))
+    # Skoro nie ma logowania przez przeglądarkę, "zalogowany" = token jest ustawiony w env.
+    return render_template('index.html', logged_in=bool(WIKI_ACCESS_TOKEN))
 
-@app.route('/login')
-def login():
-    redirect_uri = url_for('auth', _external=True)
-    return wikimedia.authorize_redirect(redirect_uri)
-
-@app.route('/auth')
-def auth():
-    token = wikimedia.authorize_access_token()
-    session['wiki_token'] = token
-    return redirect(url_for('index'))
-
-@app.route('/logout')
-def logout():
-    session.pop('wiki_token', None)
-    return redirect(url_for('index'))
 
 @app.route('/check', methods=['POST'])
 def check_license():
@@ -49,7 +51,7 @@ def check_license():
     url = request.json.get('url')
     if not url:
         return jsonify({'is_cc': False, 'error': 'Missing URL.'})
-    
+
     try:
         ydl_opts = {
             'quiet': True,
@@ -57,13 +59,9 @@ def check_license():
             'noplaylist': True,
             'ignore_no_formats_error': True,
             'check_formats': False,
-            'source_address': '0.0.0.0', # WYMUSZENIE IPv4
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios', 'android_vr'] # Omijanie BotGuarda
-                }
-            }
         }
+        if os.path.exists(COOKIES_FILE):
+            ydl_opts['cookiefile'] = COOKIES_FILE
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -72,7 +70,7 @@ def check_license():
 
             license_info = info.get('license', '')
             description = info.get('description', '')
-            
+
             is_creative_commons = False
             if license_info and ('Creative Commons' in license_info or 'Attribution' in license_info):
                 is_creative_commons = True
@@ -81,161 +79,236 @@ def check_license():
 
             if is_creative_commons:
                 return jsonify({'is_cc': True, 'title': info.get('title'), 'id': info.get('id')})
-            
+
             if not license_info:
-                return jsonify({'is_cc': False, 'error': 'No Creative Commons license detected (standard YouTube license is not allowed on Commons).'})
-            
+                return jsonify({'is_cc': False, 'error': 'Brak licencji Creative Commons (standardowa licencja YouTube nie jest dozwolona na Commons).'})
+
             return jsonify({'is_cc': False, 'error': f'Invalid license: {license_info}'})
-            
+
     except Exception as e:
         return jsonify({'is_cc': False, 'error': str(e)})
 
+
 @app.route('/upload', methods=['POST'])
 def handle_upload():
-    token = session.get('wiki_token')
-    if not token:
-        return jsonify({'error': 'Not logged in.'}), 401
+    if not WIKI_ACCESS_TOKEN:
+        return jsonify({'error': 'Brak skonfigurowanego WIKI_ACCESS_TOKEN na serwerze.'}), 401
 
     yt_url = request.form.get('url')
     media_type = request.form.get('type')
     timestamp = request.form.get('timestamp')
-    
+
     if not yt_url or media_type not in ['video', 'audio', 'thumbnail', 'frame']:
         return jsonify({'error': 'Missing required data.'}), 400
 
     try:
-        downloaded_file, safe_title, description = download_media(yt_url, media_type, timestamp)
-        commons_url = upload_to_commons(downloaded_file, safe_title, description, token)
+        downloaded_file, safe_title, description, comment = download_media(yt_url, media_type, timestamp)
+        commons_url = upload_to_commons(downloaded_file, safe_title, description, comment)
         if os.path.exists(downloaded_file):
             os.remove(downloaded_file)
         return jsonify({'success': True, 'url': commons_url})
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
-def download_media(url, media_type, timestamp=None):
-    ydl_opts = {
-        'source_address': '0.0.0.0', # WYMUSZENIE IPv4
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android_vr'] # Omijanie BotGuarda
-            }
-        },
+
+def _base_ydl_opts():
+    opts = {
         'nocheckcertificate': True,
-        'prefer_insecure': True
+        'prefer_insecure': True,
     }
+    if os.path.exists(COOKIES_FILE):
+        opts['cookiefile'] = COOKIES_FILE
+    return opts
+
+
+def _extract_with_fallback(url, extra_opts, download):
+    """
+    Próbuje pobrać/wyciągnąć info kolejnymi klientami YouTube (mweb -> android -> web),
+    bo pojedynczy klient bywa okresowo blokowany (403) przez YouTube.
+    """
+    last_error = None
+    for client in PLAYER_CLIENTS:
+        opts = dict(_base_ydl_opts())
+        opts.update(extra_opts)
+        opts['extractor_args'] = {'youtube': {'player_client': [client]}}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=download)
+                if info:
+                    return info, client
+        except Exception as e:
+            last_error = e
+            print(f"[fallback] Klient '{client}' zawiódł: {e}")
+            time.sleep(1)
+            continue
+    raise last_error or Exception("Nie udało się pobrać danych żadnym z klientów YouTube.")
+
+
+def download_media(url, media_type, timestamp=None):
     ext = ""
-    
+    downloaded_file = None
+    final_filename = None
+    info = None
+    used_client = None
+
     if media_type == 'video':
-        ydl_opts.update({
+        extra_opts = {
             'format': 'bv*+ba/b/best',
-            'postprocessors': [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'webm'
-            }],
-            'outtmpl': '%(id)s.%(ext)s'
-        })
+            'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'webm'}],
+            'outtmpl': '%(id)s.%(ext)s',
+        }
         ext = "webm"
+        info, used_client = _extract_with_fallback(url, extra_opts, download=True)
     elif media_type == 'audio':
-        ydl_opts.update({
+        extra_opts = {
             'format': 'ba*/b/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'vorbis'
-            }],
-            'outtmpl': '%(id)s.%(ext)s'
-        })
+            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'vorbis'}],
+            'outtmpl': '%(id)s.%(ext)s',
+        }
         ext = "ogg"
+        info, used_client = _extract_with_fallback(url, extra_opts, download=True)
     elif media_type == 'thumbnail':
-        ydl_opts.update({
-            'skip_download': True, 
-            'writethumbnail': True,
-            'outtmpl': '%(id)s'
-        })
+        extra_opts = {'skip_download': True, 'writethumbnail': True, 'outtmpl': '%(id)s'}
+        info, used_client = _extract_with_fallback(url, extra_opts, download=True)
     elif media_type == 'frame':
-        ydl_opts.update({
-            'format': 'b/bv*/best',
-            'skip_download': True
-        })
+        extra_opts = {'format': 'b/bv*/best', 'skip_download': True}
+        info, used_client = _extract_with_fallback(url, extra_opts, download=False)
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=(media_type in ['video', 'audio', 'thumbnail']))
-        title_base = info.get('title', 'media')
-        safe_title = "".join([c for c in title_base if c.isalnum() or c == ' ']).rstrip().replace(" ", "_")
-        
-        if media_type == 'frame':
-            stream_url = info.get('url')
-            if not stream_url and 'formats' in info:
-                video_formats = [f['url'] for f in info['formats'] if f.get('url')]
-                if video_formats:
-                    stream_url = video_formats[-1]
-            
-            if not stream_url:
-                raise Exception("Nie udało się uzyskać bezpośredniego strumienia wideo.")
+    print(f"[info] Użyty klient YouTube: {used_client}")
 
-            ext = 'jpg'
-            final_filename = f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
-            cmd = ['ffmpeg', '-ss', str(timestamp), '-i', stream_url, '-vframes', '1', '-q:v', '2', final_filename, '-y']
-            subprocess.run(cmd, check=True)
+    title_base = info.get('title', 'media')
+    safe_title = "".join([c for c in title_base if c.isalnum() or c == ' ']).rstrip().replace(" ", "_")
+
+    if media_type == 'frame':
+        stream_url = info.get('url')
+        if not stream_url and 'formats' in info:
+            video_formats = [f['url'] for f in info['formats'] if f.get('url')]
+            if video_formats:
+                stream_url = video_formats[-1]
+
+        if not stream_url:
+            raise Exception("Nie udało się uzyskać bezpośredniego strumienia wideo.")
+
+        ext = 'jpg'
+        final_filename = f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
+        cmd = ['ffmpeg', '-ss', str(timestamp), '-i', stream_url, '-vframes', '1', '-q:v', '2', final_filename, '-y']
+        subprocess.run(cmd, check=True)
+        downloaded_file = final_filename
+
+    elif media_type == 'thumbnail':
+        downloaded_file = next((f for f in os.listdir('.') if f.startswith(info['id']) and f.endswith(('.jpg', '.webp', '.png'))), None)
+        if not downloaded_file:
+            downloaded_file = next((f for f in os.listdir('.') if f.endswith(('.jpg', '.webp', '.png'))), None)
+        ext = downloaded_file.split('.')[-1] if downloaded_file else 'jpg'
+        final_filename = f"{safe_title}_thumb.{ext}"
+        if downloaded_file and downloaded_file != final_filename:
+            os.replace(downloaded_file, final_filename)
+        downloaded_file = final_filename
+
+    else:
+        downloaded_file = f"{info['id']}.{ext}"
+        final_filename = f"{safe_title}.{ext}"
+        if os.path.exists(downloaded_file) and downloaded_file != final_filename:
+            # FIX: os.rename -> os.replace, bo na Windows os.rename rzuca
+            # [WinError 183] jeśli plik docelowy już istnieje (np. z poprzedniej,
+            # przerwanej próby). os.replace nadpisuje bezpiecznie.
+            os.replace(downloaded_file, final_filename)
             downloaded_file = final_filename
-            
-        elif media_type == 'thumbnail':
-            downloaded_file = next((f for f in os.listdir('.') if f.startswith(info['id']) and f.endswith(('.jpg', '.webp', '.png'))), None)
-            if not downloaded_file:
-                downloaded_file = next((f for f in os.listdir('.') if f.endswith(('.jpg', '.webp', '.png'))), None)
-            ext = downloaded_file.split('.')[-1] if downloaded_file else 'jpg'
-            final_filename = f"{safe_title}_thumb.{ext}"
-            if downloaded_file and downloaded_file != final_filename:
-                os.rename(downloaded_file, final_filename)
-            downloaded_file = final_filename
-            
-        else:
-            downloaded_file = f"{info['id']}.{ext}"
-            final_filename = f"{safe_title}.{ext}"
-            if os.path.exists(downloaded_file) and downloaded_file != final_filename:
-                os.rename(downloaded_file, final_filename)
-                downloaded_file = final_filename
 
-        # Dynamiczny dobór licencji (przejście na CC-BY-4.0 od 1 sierpnia 2025 r.)
-        upload_date = info.get('upload_date', '')
-        if upload_date and upload_date >= '20250801':
-            license_tag = '{{YouTube CC-BY-4.0}}'
-        else:
-            license_tag = '{{YouTube CC-BY}}'
+    # Dynamiczny dobór licencji
+    upload_date = info.get('upload_date', '')
+    if upload_date and upload_date >= '20250801':
+        license_tag = '{{YouTube CC-BY-4.0}}'
+    else:
+        license_tag = '{{YouTube CC-BY}}'
 
-        description = (
-            "== {{int:filedesc}} ==\n"
-            "{{Information\n"
-            f"|description={info.get('description', 'Downloaded from YouTube')}\n"
-            f"|date={upload_date}\n"
-            f"|source={url}\n"
-            f"|author={info.get('uploader', 'Unknown')}\n"
-            f"|permission={license_tag}\n"
-            "}}\n"
-            "== {{int:license-header}} ==\n"
-            f"{license_tag}\n"
-            "{{LicenseReview}}"
-        )
-        return downloaded_file, final_filename, description
+    author = info.get('uploader', 'Unknown')
+    video_description = info.get('description', '')
+    tekst = upload_date
+    wynik = f"{tekst[:4]}.{tekst[4:6]}.{tekst[6:]}"
 
-def upload_to_commons(file_path, title, description, token):
-    headers = {'Authorization': f"Bearer {token['access_token']}"}
+    type_labels = {'video': 'film', 'audio': 'audio', 'thumbnail': 'thumbnail', 'frame': 'frame'}
+    type_label = type_labels.get(media_type, media_type)
+
+    if media_type == 'frame':
+        seconds = float(timestamp)
+        mm, ss = divmod(int(seconds), 60)
+        time_label = f"{mm}:{ss:02d}"
+        # FIX: był podwójny "?" (?v=...?t=...), co jest niepoprawnym URL-em.
+        # Drugi parametr zapytania musi być po "&", nie po kolejnym "?".
+        timestamped_link = f"[https://www.youtube.com/watch?v={info['id']}&t={int(seconds)}s {time_label}]"
+        source_field = f"""Youtube Video: "{safe_title}" {timestamped_link}"""
+        top_line = f"""Frame at {time_label} from Youtube video "{safe_title}" """
+    elif media_type == 'audio':
+        source_field = url
+        top_line = f"""Audio  from Youtube video "{safe_title}" """
+    elif media_type == 'thumbnail':
+        source_field = url
+        top_line = f"""Thumbnail from Youtube video "{safe_title}" """
+    else:  # video
+        source_field = url
+        top_line = f"""Video from Youtube video "{safe_title}" """
+
+    full_description = f"{top_line}"
+
+    description = (
+        "== {{int:filedesc}} ==\n"
+        "{{Information\n"
+        f"|description={full_description}\n"
+        f"|date={wynik}\n"
+        f"|source={source_field}\n"
+        f"|author={author}\n"
+        "}}\n"
+        "== {{int:license-header}} ==\n"
+        f"{license_tag}\n"
+        "{{LicenseReview}}"
+    )
+
+    comment = f"Uploaded a {type_label} by {author} from {url} with YouTube to Wikimedia Commons"
+
+    return downloaded_file, final_filename, description, comment
+
+
+def upload_to_commons(file_path, title, description, comment):
+    # WAŻNE: podmień "ToolforgeUser" na prawdziwy kontakt (email / stronę użytkownika na Commons).
+    headers = {
+        'Authorization': f"Bearer {WIKI_ACCESS_TOKEN}",
+        'User-Agent': 'YouTubeToCommonsLocal/1.0 (Contact: ToolforgeUser)'
+    }
+
     res = requests.get(API_URL, params={'action': 'query', 'meta': 'tokens', 'format': 'json'}, headers=headers)
-    csrf_token = res.json()['query']['tokens']['csrftoken']
-    
+    print("[commons] tokens status:", res.status_code, res.text[:500])
+
+    try:
+        csrf_token = res.json()['query']['tokens']['csrftoken']
+    except KeyError:
+        raise Exception(f"Błąd uprawnień na Commons: {res.json()}")
+
     with open(file_path, 'rb') as f:
         files = {'file': (title, f, 'multipart/form-data')}
         data = {
             'action': 'upload',
             'filename': title,
             'text': description,
+            'comment': comment,
             'token': csrf_token,
             'format': 'json',
             'ignorewarnings': 1
         }
         response = requests.post(API_URL, files=files, data=data, headers=headers)
         result = response.json()
-        
+        print("[commons] upload result:", result)
+
         if 'upload' in result and result['upload']['result'] == 'Success':
             return result['upload']['imageinfo']['descriptionurl']
         else:
             raise Exception(str(result))
+
+
+if __name__ == '__main__':
+    # FIX: debug=False domyślnie (bezpieczeństwo w produkcji) + port z env PORT (Render go wymaga).
+    # Do lokalnego dev możesz ustawić FLASK_DEBUG=1 w env, żeby wrócić do trybu debug.
+    port = int(os.environ.get('PORT', 5000))
+    debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
+    app.run(debug=debug_mode, use_reloader=False, host='0.0.0.0', port=port)
