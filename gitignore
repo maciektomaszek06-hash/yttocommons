@@ -1,0 +1,22 @@
+# Sekrety - nigdy nie commituj
+.env
+youtube_cookies.txt
+
+# Pliki mediów generowane w trakcie działania
+*.mp4
+*.webm
+*.ogg
+*.jpg
+*.jpeg
+*.png
+*.webp
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / edytory
+.DS_Store
+.vscode/
