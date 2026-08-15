@@ -134,7 +134,10 @@ def _base_ydl_opts():
         'nocheckcertificate': True,
         'prefer_insecure': True,
     }
-    if os.path.exists(COOKIES_FILE):
+    cookies_exists = os.path.exists(COOKIES_FILE)
+    cookies_size = os.path.getsize(COOKIES_FILE) if cookies_exists else 0
+    print(f"[diag] COOKIES_FILE={COOKIES_FILE} exists={cookies_exists} size={cookies_size}bytes")
+    if cookies_exists:
         opts['cookiefile'] = COOKIES_FILE
     return opts
 
