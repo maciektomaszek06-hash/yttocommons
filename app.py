@@ -32,8 +32,25 @@ else:
 
 # Plik cookies eksportowany rozszerzeniem "Get cookies.txt LOCALLY" z youtube.com.
 # Lokalnie: musi leżeć obok tego pliku app.py.
-# Na Render: wgraj go jako "Secret File" pod tą samą ścieżką (patrz README.md).
-COOKIES_FILE = os.environ.get('YOUTUBE_COOKIES_FILE', 'youtube_cookies.txt')
+# Na Render: wgraj go jako "Secret File" (patrz README.md). Sekcja "Secret Files" na
+# Render montuje pliki jako READ-ONLY, a yt-dlp domyślnie DOPISUJE zaktualizowane
+# cookies z powrotem do cookiefile po każdym użyciu -> zapis się wywala
+# ([Errno 30] Read-only file system). Dlatego przy starcie kopiujemy plik do /tmp
+# (zapisywalne), i stamtąd już normalnie czytamy/nadpisujemy.
+_SOURCE_COOKIES_FILE = os.environ.get('YOUTUBE_COOKIES_FILE', 'youtube_cookies.txt')
+COOKIES_FILE = _SOURCE_COOKIES_FILE
+
+if os.path.exists(_SOURCE_COOKIES_FILE):
+    try:
+        writable_path = os.path.join('/tmp', 'youtube_cookies.txt')
+        if os.path.abspath(_SOURCE_COOKIES_FILE) != os.path.abspath(writable_path):
+            import shutil
+            shutil.copyfile(_SOURCE_COOKIES_FILE, writable_path)
+            COOKIES_FILE = writable_path
+            print(f"[cookies] Skopiowano {_SOURCE_COOKIES_FILE} -> {writable_path} (zapisywalna kopia)")
+    except Exception as e:
+        print(f"[cookies] UWAGA: nie udało się skopiować cookies do /tmp: {e}")
+        print("[cookies] Będę próbował czytać bezpośrednio z oryginalnej ścieżki (może być read-only).")
 
 # Kolejność klientów YouTube do wypróbowania.
 PLAYER_CLIENTS = ['mweb', 'android', 'web']
