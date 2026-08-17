@@ -144,10 +144,27 @@ def _base_ydl_opts():
 
 def _extract_with_fallback(url, extra_opts, download):
     """
-    Próbuje pobrać/wyciągnąć info kolejnymi klientami YouTube (mweb -> android -> web),
-    bo pojedynczy klient bywa okresowo blokowany (403) przez YouTube.
+    Próba 0: domyślna, wielo-kliencka strategia yt-dlp (bez wymuszania player_client) -
+    dokładnie to, czego używa /check, gdzie działa. yt-dlp sam dobiera i rotuje klientów,
+    co bywa skuteczniejsze przeciwko bot-detection niż sztywne wymuszanie jednego na raz.
+
+    Próby 1+: wymuszone pojedyncze klienty (mweb -> android -> web) jako plan B,
+    na wypadek gdyby domyślna strategia zawiodła.
     """
     last_error = None
+
+    try:
+        opts = dict(_base_ydl_opts())
+        opts.update(extra_opts)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=download)
+            if info:
+                return info, 'default'
+    except Exception as e:
+        last_error = e
+        print(f"[fallback] Domyślny klient zawiódł: {e}")
+        time.sleep(1)
+
     for client in PLAYER_CLIENTS:
         opts = dict(_base_ydl_opts())
         opts.update(extra_opts)
@@ -189,7 +206,14 @@ def download_media(url, media_type, timestamp=None):
         ext = "ogg"
         info, used_client = _extract_with_fallback(url, extra_opts, download=True)
     elif media_type == 'thumbnail':
-        extra_opts = {'skip_download': True, 'writethumbnail': True, 'outtmpl': '%(id)s'}
+        # ignore_no_formats_error: thumbnail nie potrzebuje odtwarzalnych formatów wideo/audio,
+        # więc nie traktujemy braku formatów jako błąd krytyczny (tak jak w /check).
+        extra_opts = {
+            'skip_download': True,
+            'writethumbnail': True,
+            'outtmpl': '%(id)s',
+            'ignore_no_formats_error': True,
+        }
         info, used_client = _extract_with_fallback(url, extra_opts, download=True)
     elif media_type == 'frame':
         extra_opts = {'format': 'b/bv*/best', 'skip_download': True}
