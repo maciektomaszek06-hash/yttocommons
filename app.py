@@ -2,6 +2,9 @@ import os
 import time
 import traceback
 import subprocess
+import socket
+import ipaddress
+from urllib.parse import urlparse
 import requests
 import yt_dlp
 from flask import Flask, render_template, request, jsonify
@@ -114,12 +117,13 @@ def handle_upload():
     yt_url = request.form.get('url')
     media_type = request.form.get('type')
     timestamp = request.form.get('timestamp')
+    user_proxy = request.form.get('proxy', '').strip() or None
 
     if not yt_url or media_type not in ['video', 'audio', 'thumbnail', 'frame']:
         return jsonify({'error': 'Missing required data.'}), 400
 
     try:
-        downloaded_file, safe_title, description, comment = download_media(yt_url, media_type, timestamp)
+        downloaded_file, safe_title, description, comment = download_media(yt_url, media_type, timestamp, user_proxy=user_proxy)
         commons_url = upload_to_commons(downloaded_file, safe_title, description, comment)
         if os.path.exists(downloaded_file):
             os.remove(downloaded_file)
@@ -129,7 +133,42 @@ def handle_upload():
         return jsonify({'error': str(e)}), 500
 
 
-def _base_ydl_opts():
+def _validate_proxy_url(proxy_url):
+    """Waliduje opcjonalne proxy podane przez użytkownika.
+
+    Dopuszczamy tylko HTTP/HTTPS/SOCKS4/SOCKS5. Proxy nie jest zapisywane
+    i nie powinno być logowane, ponieważ może zawierać login/hasło.
+    """
+    if not proxy_url:
+        return None
+
+    if len(proxy_url) > 2048:
+        raise ValueError("Adres proxy jest zbyt długi.")
+
+    parsed = urlparse(proxy_url)
+    allowed_schemes = {'http', 'https', 'socks4', 'socks4a', 'socks5', 'socks5h'}
+    if parsed.scheme.lower() not in allowed_schemes:
+        raise ValueError("Proxy musi używać http://, https://, socks4:// lub socks5://.")
+    if not parsed.hostname or parsed.port is None:
+        raise ValueError("Nieprawidłowy adres proxy. Oczekiwany format: protokół://host:port")
+
+    # Ochrona przed użyciem pola proxy do łączenia się z localhostem / siecią
+    # wewnętrzną serwera (SSRF). Dopuszczamy wyłącznie publiczne adresy IP.
+    try:
+        resolved = socket.getaddrinfo(parsed.hostname, parsed.port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise ValueError("Nie można rozwiązać hosta proxy.")
+
+    for entry in resolved:
+        ip = ipaddress.ip_address(entry[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            raise ValueError("Proxy musi wskazywać na publiczny adres IP.")
+
+    return proxy_url
+
+
+def _base_ydl_opts(user_proxy=None):
     opts = {
         'nocheckcertificate': True,
         'prefer_insecure': True,
@@ -139,10 +178,12 @@ def _base_ydl_opts():
     print(f"[diag] COOKIES_FILE={COOKIES_FILE} exists={cookies_exists} size={cookies_size}bytes")
     if cookies_exists:
         opts['cookiefile'] = COOKIES_FILE
+    if user_proxy:
+        opts['proxy'] = user_proxy
     return opts
 
 
-def _extract_with_fallback(url, extra_opts, download):
+def _extract_with_fallback(url, extra_opts, download, user_proxy=None):
     """
     Próba 0: domyślna, wielo-kliencka strategia yt-dlp (bez wymuszania player_client) -
     dokładnie to, czego używa /check, gdzie działa. yt-dlp sam dobiera i rotuje klientów,
@@ -154,7 +195,7 @@ def _extract_with_fallback(url, extra_opts, download):
     last_error = None
 
     try:
-        opts = dict(_base_ydl_opts())
+        opts = dict(_base_ydl_opts(user_proxy))
         opts.update(extra_opts)
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=download)
@@ -166,7 +207,7 @@ def _extract_with_fallback(url, extra_opts, download):
         time.sleep(1)
 
     for client in PLAYER_CLIENTS:
-        opts = dict(_base_ydl_opts())
+        opts = dict(_base_ydl_opts(user_proxy))
         opts.update(extra_opts)
         opts['extractor_args'] = {'youtube': {'player_client': [client]}}
         try:
@@ -182,12 +223,13 @@ def _extract_with_fallback(url, extra_opts, download):
     raise last_error or Exception("Nie udało się pobrać danych żadnym z klientów YouTube.")
 
 
-def download_media(url, media_type, timestamp=None):
+def download_media(url, media_type, timestamp=None, user_proxy=None):
     ext = ""
     downloaded_file = None
     final_filename = None
     info = None
     used_client = None
+    user_proxy = _validate_proxy_url(user_proxy)
 
     if media_type == 'video':
         extra_opts = {
@@ -196,7 +238,7 @@ def download_media(url, media_type, timestamp=None):
             'outtmpl': '%(id)s.%(ext)s',
         }
         ext = "webm"
-        info, used_client = _extract_with_fallback(url, extra_opts, download=True)
+        info, used_client = _extract_with_fallback(url, extra_opts, download=True, user_proxy=user_proxy)
     elif media_type == 'audio':
         extra_opts = {
             'format': 'ba*/b/best',
@@ -204,7 +246,7 @@ def download_media(url, media_type, timestamp=None):
             'outtmpl': '%(id)s.%(ext)s',
         }
         ext = "ogg"
-        info, used_client = _extract_with_fallback(url, extra_opts, download=True)
+        info, used_client = _extract_with_fallback(url, extra_opts, download=True, user_proxy=user_proxy)
     elif media_type == 'thumbnail':
         # ignore_no_formats_error: thumbnail nie potrzebuje odtwarzalnych formatów wideo/audio,
         # więc nie traktujemy braku formatów jako błąd krytyczny (tak jak w /check).
@@ -214,10 +256,10 @@ def download_media(url, media_type, timestamp=None):
             'outtmpl': '%(id)s',
             'ignore_no_formats_error': True,
         }
-        info, used_client = _extract_with_fallback(url, extra_opts, download=True)
+        info, used_client = _extract_with_fallback(url, extra_opts, download=True, user_proxy=user_proxy)
     elif media_type == 'frame':
         extra_opts = {'format': 'b/bv*/best', 'skip_download': True}
-        info, used_client = _extract_with_fallback(url, extra_opts, download=False)
+        info, used_client = _extract_with_fallback(url, extra_opts, download=False, user_proxy=user_proxy)
 
     print(f"[info] Użyty klient YouTube: {used_client}")
 
@@ -236,7 +278,18 @@ def download_media(url, media_type, timestamp=None):
 
         ext = 'jpg'
         final_filename = f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
-        cmd = ['ffmpeg', '-ss', str(timestamp), '-i', stream_url, '-vframes', '1', '-q:v', '2', final_filename, '-y']
+
+        cmd = ['ffmpeg', '-ss', str(timestamp)]
+        # Dla klatki ffmpeg sam otwiera bezpośredni URL strumienia, więc musi
+        # dostać to samo proxy. FFmpeg obsługuje http_proxy dla HTTP/HTTPS.
+        if user_proxy:
+            proxy_scheme = urlparse(user_proxy).scheme.lower()
+            if proxy_scheme in ('http', 'https'):
+                cmd += ['-http_proxy', user_proxy]
+            elif proxy_scheme.startswith('socks'):
+                raise ValueError("Dla typu 'frame' użyj proxy HTTP/HTTPS; SOCKS jest obsługiwany przez yt-dlp, ale nie przez ten etap ffmpeg.")
+
+        cmd += ['-i', stream_url, '-vframes', '1', '-q:v', '2', final_filename, '-y']
         subprocess.run(cmd, check=True)
         downloaded_file = final_filename
 
@@ -355,4 +408,4 @@ if __name__ == '__main__':
     # Do lokalnego dev możesz ustawić FLASK_DEBUG=1 w env, żeby wrócić do trybu debug.
     port = int(os.environ.get('PORT', 5000))
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
-    app.run(debug=debug_mode, use_reloader=False, host='0.0.0.0', port=port)
+    app.run(debug=debug_mode, use_reloader=False, host='0.0.0.0', port=port
