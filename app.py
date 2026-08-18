@@ -290,7 +290,10 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
                 raise ValueError("Dla typu 'frame' użyj proxy HTTP/HTTPS; SOCKS jest obsługiwany przez yt-dlp, ale nie przez ten etap ffmpeg.")
 
         cmd += ['-i', stream_url, '-vframes', '1', '-q:v', '2', final_filename, '-y']
-        subprocess.run(cmd, check=True)
+        result = subprocess.run(     cmd,     stdout=subprocess.PIPE,     stderr=subprocess.PIPE,     text=True ) 
+        if result.returncode != 0:     
+            print("[ffmpeg stderr]", result.stderr)     
+            raise Exception(         "FFmpeg nie udało się pobrać klatki. "         f"Szczegóły: {result.stderr[-2000:]}"     )
         downloaded_file = final_filename
 
     elif media_type == 'thumbnail':
