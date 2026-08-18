@@ -267,34 +267,100 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
     safe_title = "".join([c for c in title_base if c.isalnum() or c == ' ']).rstrip().replace(" ", "_")
 
     if media_type == 'frame':
-        stream_url = info.get('url')
-        if not stream_url and 'formats' in info:
-            video_formats = [f['url'] for f in info['formats'] if f.get('url')]
-            if video_formats:
-                stream_url = video_formats[-1]
+    stream_url = info.get('url')
 
-        if not stream_url:
-            raise Exception("Nie udało się uzyskać bezpośredniego strumienia wideo.")
+    if not stream_url and 'formats' in info:
+        video_formats = [
+            f for f in info['formats']
+            if f.get('url') and f.get('vcodec') != 'none'
+        ]
 
-        ext = 'jpg'
-        final_filename = f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
+        if video_formats:
+            selected_format = video_formats[-1]
+            stream_url = selected_format['url']
 
-        cmd = ['ffmpeg', '-ss', str(timestamp)]
-        # Dla klatki ffmpeg sam otwiera bezpośredni URL strumienia, więc musi
-        # dostać to samo proxy. FFmpeg obsługuje http_proxy dla HTTP/HTTPS.
-        if user_proxy:
-            proxy_scheme = urlparse(user_proxy).scheme.lower()
-            if proxy_scheme in ('http', 'https'):
-                cmd += ['-http_proxy', user_proxy]
-            elif proxy_scheme.startswith('socks'):
-                raise ValueError("Dla typu 'frame' użyj proxy HTTP/HTTPS; SOCKS jest obsługiwany przez yt-dlp, ale nie przez ten etap ffmpeg.")
+            format_headers = selected_format.get('http_headers') or {}
+        else:
+            format_headers = {}
+    else:
+        format_headers = info.get('http_headers') or {}
 
-        cmd += ['-i', stream_url, '-vframes', '1', '-q:v', '2', final_filename, '-y']
-        result = subprocess.run(     cmd,     stdout=subprocess.PIPE,     stderr=subprocess.PIPE,     text=True ) 
-        if result.returncode != 0:     
-            print("[ffmpeg stderr]", result.stderr)     
-            raise Exception(         "FFmpeg nie udało się pobrać klatki. "         f"Szczegóły: {result.stderr[-2000:]}"     )
-        downloaded_file = final_filename
+    if not stream_url:
+        raise Exception(
+            "Nie udało się uzyskać bezpośredniego strumienia wideo."
+        )
+
+    ext = 'jpg'
+    final_filename = (
+        f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
+    )
+
+    headers = dict(info.get('http_headers') or {})
+    headers.update(format_headers)
+
+    user_agent = headers.pop(
+        'User-Agent',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 Chrome/124 Safari/537.36'
+    )
+
+    referer = headers.pop(
+        'Referer',
+        'https://www.youtube.com/'
+    )
+
+    cmd = [
+        'ffmpeg',
+        '-ss', str(timestamp)
+    ]
+
+    if user_proxy:
+        proxy_scheme = urlparse(user_proxy).scheme.lower()
+
+        if proxy_scheme in ('http', 'https'):
+            cmd += ['-http_proxy', user_proxy]
+
+        elif proxy_scheme.startswith('socks'):
+            raise ValueError(
+                "Dla typu 'frame' użyj proxy HTTP/HTTPS."
+            )
+
+    cmd += [
+        '-user_agent', user_agent,
+        '-referer', referer,
+    ]
+
+    if headers:
+        header_string = ''.join(
+            f"{key}: {value}\r\n"
+            for key, value in headers.items()
+        )
+        cmd += ['-headers', header_string]
+
+    cmd += [
+        '-i', stream_url,
+        '-vframes', '1',
+        '-q:v', '2',
+        final_filename,
+        '-y'
+    ]
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if result.returncode != 0:
+        print("[ffmpeg stderr]", result.stderr)
+
+        raise Exception(
+            "FFmpeg nie udało się pobrać klatki. "
+            f"Szczegóły: {result.stderr[-2000:]}"
+        )
+
+    downloaded_file = final_filename
 
     elif media_type == 'thumbnail':
         downloaded_file = next((f for f in os.listdir('.') if f.startswith(info['id']) and f.endswith(('.jpg', '.webp', '.png'))), None)
