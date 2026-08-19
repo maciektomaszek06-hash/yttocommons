@@ -1,5 +1,0 @@
-Flask
-Authlib
-requests
-gunicorn
-https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.tar.gz
