@@ -22,12 +22,10 @@
         .active-mode { display: block; }
         
         .proxy-warning { margin-top: 8px; color: #8a5a00; font-size: 13px; }
-        #pairing-box { text-align: center; margin-top: 10px; }
-        .pairing-code { font-size: 24px; font-weight: bold; letter-spacing: 2px; color: #d9534f; margin: 10px 0; }
-        
         .instructions { background:#eef4ff; border:1px solid #b8c9ef; padding:14px; border-radius:6px; margin-top:12px; font-size: 14px;}
         .instructions ol { margin:8px 0 0 22px; padding:0; }
         code { background:#eee; padding:2px 5px; }
+        #pairing-info { margin-top: 15px; text-align: center; }
     </style>
     <script src="https://www.youtube.com/iframe_api"></script>
 </head>
@@ -79,10 +77,9 @@
                         </ol>
                     </div>
                     <br>
-                    <button onclick="pairLocal()" id="pair-btn">Pair local agent</button>
-                    <div id="pairing-box" style="display: none;">
-                        <div id="pairing_display"></div>
-                    </div>
+                    <button onclick="startPairing()" id="pair-btn">Pair local agent</button>
+                    <button onclick="launchAgent()" style="background: #5bc0de;">Open local agent</button>
+                    <div id="pairing-info"></div>
                 </div>
             </div>
 
@@ -105,9 +102,9 @@
     </div>
 
     <script>
-        let player;
+        let ytPlayer;
         let currentVideoId = '';
-        let browserToken = localStorage.getItem('yt_browser_token') || '';
+        let browserToken = localStorage.getItem('yttocommons_browser_token') || '';
 
         function toggleMode() {
             document.getElementById('proxy_details').classList.remove('active-mode');
@@ -117,6 +114,65 @@
             } else {
                 document.getElementById('local_details').classList.add('active-mode');
             }
+        }
+
+        function launchAgent(pairingCode = "") {
+            const server = window.location.origin;
+            let url = `yttocommons-agent://start?server=${encodeURIComponent(server)}`;
+            if (pairingCode) {
+                url += `&pairing_code=${encodeURIComponent(pairingCode)}`;
+            }
+            window.location.href = url;
+        }
+
+        async function startPairing() {
+            const btn = document.getElementById("pair-btn");
+            const info = document.getElementById("pairing-info");
+            
+            btn.disabled = true;
+            info.innerHTML = "Pairing...";
+
+            try {
+                const response = await fetch("/api/local/pair/start", {method:"POST"});
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    info.innerHTML = `<span class="error">${data.error || "Pairing failed."}</span>`;
+                    btn.disabled = false;
+                    return;
+                }
+                
+                browserToken = data.browser_token;
+                localStorage.setItem("yttocommons_browser_token", browserToken);
+                
+                info.innerHTML = 
+                    `Pairing code: <strong style="font-size:24px; color:#d9534f; display:block; margin:10px 0;">${data.pairing_code}</strong>` +
+                    `Trying to open the local agent automatically. If nothing happens, click "Open local agent".`;
+                
+                launchAgent(data.pairing_code);
+                pollPairing();
+            } catch (e) {
+                info.innerHTML = `<span class="error">Connection error: ${e.message}</span>`;
+                btn.disabled = false;
+            }
+        }
+
+        async function pollPairing() {
+            for (let i = 0; i < 60; i++) {
+                await new Promise(r => setTimeout(r, 2000));
+                try {
+                    const response = await fetch("/api/local/pair/status", {
+                        headers: {"X-Browser-Token": browserToken}
+                    });
+                    const data = await response.json();
+                    if (data.paired) {
+                        document.getElementById("pairing-info").innerHTML = '<span class="success">✔ Local agent paired successfully!</span>';
+                        document.getElementById("pair-btn").disabled = false;
+                        return;
+                    }
+                } catch (e) {}
+            }
+            document.getElementById("pair-btn").disabled = false;
         }
 
         async function checkLicense() {
@@ -143,47 +199,15 @@
                 const data = await res.json();
                 
                 if (data.is_cc) {
-                    status.innerHTML = `<span class="success">License OK! Media ready to upload. Title: ${data.title}</span>`;
+                    status.innerHTML = `<span class="success">✔ License OK! Title: ${data.title}</span>`;
                     currentVideoId = data.id;
                     document.getElementById('controls').style.display = 'block';
                     document.getElementById('mode-selector').style.display = 'block';
                 } else {
-                    status.innerHTML = `<span class="error">Error: ${data.error || 'This video does not have a CC license.'}</span>`;
+                    status.innerHTML = `<span class="error">✖ Error: ${data.error || 'This video does not have a CC license.'}</span>`;
                 }
             } catch (e) {
-                status.innerHTML = `<span class="error">Connection error: ${e.message}</span>`;
-            }
-        }
-
-        async function pairLocal() {
-            const btn = document.getElementById('pair-btn');
-            const box = document.getElementById('pairing-box');
-            const display = document.getElementById('pairing_display');
-            
-            btn.disabled = true;
-            btn.innerText = "Pairing...";
-
-            try {
-                const res = await fetch('/api/local/pair/start', { method: 'POST' });
-                const data = await res.json();
-                
-                if (data.error) {
-                    alert("Error: " + data.error);
-                    btn.disabled = false;
-                    btn.innerText = "Pair local agent";
-                    return;
-                }
-
-                browserToken = data.browser_token;
-                localStorage.setItem('yt_browser_token', browserToken);
-                
-                box.style.display = 'block';
-                display.innerHTML = `Enter this code in your Local Agent program: <div class="pairing-code">${data.pairing_code}</div>`;
-                btn.style.display = 'none';
-            } catch (e) {
-                alert("Connection error: " + e.message);
-                btn.disabled = false;
-                btn.innerText = "Pair local agent";
+                status.innerHTML = `<span class="error">✖ Connection error: ${e.message}</span>`;
             }
         }
 
@@ -192,6 +216,8 @@
             const status = document.getElementById('status');
             const modeProxy = document.getElementById('mode_proxy').checked;
             
+            if (!confirm(`Send this ${type} to Wikimedia Commons?`)) return;
+
             status.innerHTML = `Initiating upload of ${type}... Please wait.`;
             document.getElementById('controls').style.display = 'none';
             document.getElementById('player-container').style.display = 'none';
@@ -204,23 +230,23 @@
                 
                 const proxyUrl = document.getElementById('proxy_url').value;
                 if (proxyUrl) formData.append('proxy', proxyUrl);
-                if (timestamp) formData.append('timestamp', timestamp);
+                if (timestamp !== null) formData.append('timestamp', timestamp);
 
                 try {
                     const res = await fetch('/upload', { method: 'POST', body: formData });
                     const data = await res.json();
                     
                     if (data.success) {
-                        status.innerHTML = `<span class="success">Upload successful! <a href="${data.url}" target="_blank">View on Commons</a></span>`;
+                        status.innerHTML = `<span class="success">✔ Upload successful! <a href="${data.url}" target="_blank">View on Commons</a></span>`;
                     } else {
-                        status.innerHTML = `<span class="error">Upload error: ${data.error}</span>`;
+                        status.innerHTML = `<span class="error">✖ Upload error: ${data.error}</span>`;
                     }
                 } catch (e) {
-                    status.innerHTML = `<span class="error">Connection error: ${e.message}</span>`;
+                    status.innerHTML = `<span class="error">✖ Connection error: ${e.message}</span>`;
                 }
             } else {
                 if (!browserToken) {
-                    status.innerHTML = `<span class="error">No connection. Please click 'Pair local agent' first.</span>`;
+                    status.innerHTML = `<span class="error">✖ No connection. Please pair local agent first.</span>`;
                     return;
                 }
                 
@@ -236,14 +262,16 @@
                     const data = await res.json();
                     
                     if (data.error) {
-                        status.innerHTML = `<span class="error">Local agent error: ${data.error}</span>`;
+                        status.innerHTML = `<span class="error">✖ Local agent error: ${data.error}</span>`;
                         return;
                     }
                     
                     status.innerHTML = 'Job sent to local agent. Waiting for upload...';
+                    
+                    launchAgent();
                     pollJobStatus(data.job_id);
                 } catch (e) {
-                    status.innerHTML = `<span class="error">Connection error: ${e.message}</span>`;
+                    status.innerHTML = `<span class="error">✖ Connection error: ${e.message}</span>`;
                 }
             }
         }
@@ -259,10 +287,10 @@
                     
                     if (data.status === 'done') {
                         clearInterval(interval);
-                        statusDiv.innerHTML = `<span class="success">Upload successful via Local Agent! <a href="${data.commons_url}" target="_blank">View on Commons</a></span>`;
+                        statusDiv.innerHTML = `<span class="success">✔ Upload successful via Local Agent! <a href="${data.commons_url}" target="_blank">View on Commons</a></span>`;
                     } else if (data.status === 'error') {
                         clearInterval(interval);
-                        statusDiv.innerHTML = `<span class="error">Local agent failed: ${data.error}</span>`;
+                        statusDiv.innerHTML = `<span class="error">✖ Local agent failed: ${data.error}</span>`;
                     } else if (data.status === 'processing') {
                         statusDiv.innerHTML = 'Local agent is downloading/uploading...';
                     }
@@ -273,20 +301,20 @@
 
         function showPlayer() {
             document.getElementById('player-container').style.display = 'block';
-            if (!player && currentVideoId) {
-                player = new YT.Player('player', {
+            if (!ytPlayer && currentVideoId) {
+                ytPlayer = new YT.Player('player', {
                     height: '390',
                     width: '100%',
                     videoId: currentVideoId,
                 });
-            } else if (player && player.loadVideoById) {
-                player.loadVideoById(currentVideoId);
+            } else if (ytPlayer && ytPlayer.loadVideoById) {
+                ytPlayer.loadVideoById(currentVideoId);
             }
         }
 
         function sendFrame() {
-            if (player && player.getCurrentTime) {
-                const time = player.getCurrentTime();
+            if (ytPlayer && ytPlayer.getCurrentTime) {
+                const time = ytPlayer.getCurrentTime();
                 sendMedia('frame', time);
             } else {
                 alert("The YouTube player has not loaded yet!");
