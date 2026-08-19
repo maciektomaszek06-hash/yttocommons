@@ -304,7 +304,7 @@ def agent_next_job():
             
         browser_token = browser_row['browser_token']
         row = conn.execute(
-            "SELECT id, url, media_type, timestamp FROM jobs WHERE browser_token = ? AND status = 'waiting' ORDER BY created_at ASC LIMIT 1",
+            "SELECT id, url, media_type AS type, timestamp FROM jobs WHERE browser_token = ? AND status = 'waiting' ORDER BY created_at ASC LIMIT 1",
             (browser_token,)
         ).fetchone()
 
