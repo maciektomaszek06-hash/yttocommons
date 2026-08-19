@@ -24,6 +24,10 @@
         .proxy-warning { margin-top: 8px; color: #8a5a00; font-size: 13px; }
         #pairing-box { text-align: center; margin-top: 10px; }
         .pairing-code { font-size: 24px; font-weight: bold; letter-spacing: 2px; color: #d9534f; margin: 10px 0; }
+        
+        .instructions { background:#eef4ff; border:1px solid #b8c9ef; padding:14px; border-radius:6px; margin-top:12px; font-size: 14px;}
+        .instructions ol { margin:8px 0 0 22px; padding:0; }
+        code { background:#eee; padding:2px 5px; }
     </style>
     <script src="https://www.youtube.com/iframe_api"></script>
 </head>
@@ -65,7 +69,16 @@
                 </div>
 
                 <div id="local_details" class="mode-details">
-                    <p>Run the desktop agent on your PC to download through your own IP.</p>
+                    <strong>Local computer (recommended)</strong>
+                    <div class="instructions">
+                        <strong>How to use Local mode</strong>
+                        <ol>
+                            <li>Download <code>YouTubeToCommonsAgent.exe</code> from <a href="https://github.com/maciektomaszek06-hash/yttocommons/releases/download/agent/YouTubeToCommonsAgent.exe" target="_blank">here</a>.</li>
+                            <li>Run it once. The agent automatically registers itself.</li>
+                            <li>Return to this page and click <strong>Pair local agent</strong> below.</li>
+                        </ol>
+                    </div>
+                    <br>
                     <button onclick="pairLocal()" id="pair-btn">Pair local agent</button>
                     <div id="pairing-box" style="display: none;">
                         <div id="pairing_display"></div>
