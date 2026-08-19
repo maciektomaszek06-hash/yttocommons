@@ -93,7 +93,195 @@
 
     <!-- SKRYPT JAVASCRIPT ZACHOWAJ BEZ ZMIAN Z POPRZEDNIEJ WERSJI -->
     <script>
-        // Tutaj wklej całą sekcję <script> z poprzedniej wersji Twojego pliku index.html
+ <script>
+        let player;
+        let currentVideoId = '';
+        let browserToken = localStorage.getItem('yt_browser_token') || '';
+
+        function toggleMode() {
+            document.getElementById('proxy_details').classList.remove('active-mode');
+            document.getElementById('local_details').classList.remove('active-mode');
+            if (document.getElementById('mode_proxy').checked) {
+                document.getElementById('proxy_details').classList.add('active-mode');
+            } else {
+                document.getElementById('local_details').classList.add('active-mode');
+            }
+        }
+
+        async function checkLicense() {
+            const url = document.getElementById('yt_url').value;
+            const status = document.getElementById('status');
+            
+            if (!url) {
+                alert("Please paste a YouTube link!");
+                return;
+            }
+
+            status.style.display = 'block';
+            status.innerHTML = 'Checking license...';
+            document.getElementById('controls').style.display = 'none';
+            document.getElementById('player-container').style.display = 'none';
+            document.getElementById('mode-selector').style.display = 'none';
+
+            try {
+                const res = await fetch('/check', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({url: url})
+                });
+                const data = await res.json();
+                
+                if (data.is_cc) {
+                    status.innerHTML = `<span class="success">License OK! Media ready to upload. Title: ${data.title}</span>`;
+                    currentVideoId = data.id;
+                    document.getElementById('controls').style.display = 'block';
+                    document.getElementById('mode-selector').style.display = 'block';
+                } else {
+                    status.innerHTML = `<span class="error">Error: ${data.error || 'This video does not have a CC license.'}</span>`;
+                }
+            } catch (e) {
+                status.innerHTML = `<span class="error">Connection error: ${e.message}</span>`;
+            }
+        }
+
+        async function pairLocal() {
+            const btn = document.getElementById('pair-btn');
+            const box = document.getElementById('pairing-box');
+            const display = document.getElementById('pairing_display');
+            
+            btn.disabled = true;
+            btn.innerText = "Pairing...";
+
+            try {
+                const res = await fetch('/api/local/pair/start', { method: 'POST' });
+                const data = await res.json();
+                
+                if (data.error) {
+                    alert("Error: " + data.error);
+                    btn.disabled = false;
+                    btn.innerText = "Pair local agent";
+                    return;
+                }
+
+                browserToken = data.browser_token;
+                localStorage.setItem('yt_browser_token', browserToken);
+                
+                box.style.display = 'block';
+                display.innerHTML = `Enter this code in your Local Agent program: <div class="pairing-code">${data.pairing_code}</div>`;
+                btn.style.display = 'none';
+            } catch (e) {
+                alert("Connection error: " + e.message);
+                btn.disabled = false;
+                btn.innerText = "Pair local agent";
+            }
+        }
+
+        async function sendMedia(type, timestamp = null) {
+            const url = document.getElementById('yt_url').value;
+            const status = document.getElementById('status');
+            const modeProxy = document.getElementById('mode_proxy').checked;
+            
+            status.innerHTML = `Initiating upload of ${type}... Please wait.`;
+            document.getElementById('controls').style.display = 'none';
+            document.getElementById('player-container').style.display = 'none';
+
+            if (modeProxy) {
+                const formData = new FormData();
+                formData.append('url', url);
+                formData.append('type', type);
+                formData.append('download_mode', 'proxy');
+                
+                const proxyUrl = document.getElementById('proxy_url').value;
+                if (proxyUrl) formData.append('proxy', proxyUrl);
+                if (timestamp) formData.append('timestamp', timestamp);
+
+                try {
+                    const res = await fetch('/upload', { method: 'POST', body: formData });
+                    const data = await res.json();
+                    
+                    if (data.success) {
+                        status.innerHTML = `<span class="success">Upload successful! <a href="${data.url}" target="_blank">View on Commons</a></span>`;
+                    } else {
+                        status.innerHTML = `<span class="error">Upload error: ${data.error}</span>`;
+                    }
+                } catch (e) {
+                    status.innerHTML = `<span class="error">Connection error: ${e.message}</span>`;
+                }
+            } else {
+                if (!browserToken) {
+                    status.innerHTML = `<span class="error">No connection. Please click 'Pair local agent' first.</span>`;
+                    return;
+                }
+                
+                try {
+                    const res = await fetch('/api/local/jobs', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Browser-Token': browserToken
+                        },
+                        body: JSON.stringify({ url: url, type: type, timestamp: timestamp })
+                    });
+                    const data = await res.json();
+                    
+                    if (data.error) {
+                        status.innerHTML = `<span class="error">Local agent error: ${data.error}</span>`;
+                        return;
+                    }
+                    
+                    status.innerHTML = 'Job sent to local agent. Waiting for upload...';
+                    pollJobStatus(data.job_id);
+                } catch (e) {
+                    status.innerHTML = `<span class="error">Connection error: ${e.message}</span>`;
+                }
+            }
+        }
+
+        function pollJobStatus(jobId) {
+            const statusDiv = document.getElementById('status');
+            const interval = setInterval(async () => {
+                try {
+                    const res = await fetch(`/api/local/jobs/${jobId}`, {
+                        headers: { 'X-Browser-Token': browserToken }
+                    });
+                    const data = await res.json();
+                    
+                    if (data.status === 'done') {
+                        clearInterval(interval);
+                        statusDiv.innerHTML = `<span class="success">Upload successful via Local Agent! <a href="${data.commons_url}" target="_blank">View on Commons</a></span>`;
+                    } else if (data.status === 'error') {
+                        clearInterval(interval);
+                        statusDiv.innerHTML = `<span class="error">Local agent failed: ${data.error}</span>`;
+                    } else if (data.status === 'processing') {
+                        statusDiv.innerHTML = 'Local agent is downloading/uploading...';
+                    }
+                } catch (e) {
+                }
+            }, 3000);
+        }
+
+        function showPlayer() {
+            document.getElementById('player-container').style.display = 'block';
+            if (!player && currentVideoId) {
+                player = new YT.Player('player', {
+                    height: '390',
+                    width: '100%',
+                    videoId: currentVideoId,
+                });
+            } else if (player && player.loadVideoById) {
+                player.loadVideoById(currentVideoId);
+            }
+        }
+
+        function sendFrame() {
+            if (player && player.getCurrentTime) {
+                const time = player.getCurrentTime();
+                sendMedia('frame', time);
+            } else {
+                alert("The YouTube player has not loaded yet!");
+            }
+        }
+    </script>
     </script>
 </body>
 </html>
