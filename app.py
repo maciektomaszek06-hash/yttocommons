@@ -24,7 +24,7 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strong_random_session_secre
 API_URL = "https://commons.wikimedia.org/w/api.php"
 
 # --- OAUTH 2.0 KONFIGURACJA ---
-CLIENT_ID = "WPISZ_TUTAJ_SWOJ_CONSUMER_ID"
+CLIENT_ID = "d9963eb17353ebc8774819c2983e1fa2"
 CLIENT_SECRET = os.environ.get('CONSUMER_SECRET')
 AUTHORIZATION_BASE_URL = 'https://meta.wikimedia.org/w/rest.php/oauth2/authorize'
 TOKEN_URL = 'https://meta.wikimedia.org/w/rest.php/oauth2/access_token'
