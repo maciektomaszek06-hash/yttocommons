@@ -19,16 +19,6 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strong_random_session_secre
 
 API_URL = "https://commons.wikimedia.org/w/api.php"
 
-# --- OWNER-ONLY OAUTH TOKEN ---
-# Konsument jest zarejestrowany jako "owner-only", więc nie ma flow z przekierowaniem
-# przez przeglądarkę (login/callback). Token jest stały i pobierany ze zmiennej
-# środowiskowej WIKI_ACCESS_TOKEN.
-#
-# Lokalnie (PowerShell):
-#   $env:WIKI_ACCESS_TOKEN = "twoj_token_tutaj"
-#   python app.py
-#
-# Na Render: ustaw WIKI_ACCESS_TOKEN w panelu Environment (nie w kodzie, nie w repo).
 WIKI_ACCESS_TOKEN = os.environ.get('WIKI_ACCESS_TOKEN')
 
 if not WIKI_ACCESS_TOKEN:
@@ -38,13 +28,6 @@ else:
     print("DOTS:", WIKI_ACCESS_TOKEN.count('.'))
     print("LEN:", len(WIKI_ACCESS_TOKEN))
 
-# Plik cookies eksportowany rozszerzeniem "Get cookies.txt LOCALLY" z youtube.com.
-# Lokalnie: musi leżeć obok tego pliku app.py.
-# Na Render: wgraj go jako "Secret File" (patrz README.md). Sekcja "Secret Files" na
-# Render montuje pliki jako READ-ONLY, a yt-dlp domyślnie DOPISUJE zaktualizowane
-# cookies z powrotem do cookiefile po każdym użyciu -> zapis się wywala
-# ([Errno 30] Read-only file system). Dlatego przy starcie kopiujemy plik do /tmp
-# (zapisywalne), i stamtąd już normalnie czytamy/nadpisujemy.
 _SOURCE_COOKIES_FILE = os.environ.get('YOUTUBE_COOKIES_FILE', 'youtube_cookies.txt')
 COOKIES_FILE = _SOURCE_COOKIES_FILE
 
@@ -60,17 +43,10 @@ if os.path.exists(_SOURCE_COOKIES_FILE):
         print(f"[cookies] UWAGA: nie udało się skopiować cookies do /tmp: {e}")
         print("[cookies] Będę próbował czytać bezpośrednio z oryginalnej ścieżki (może być read-only).")
 
-# Kolejność klientów YouTube do wypróbowania.
 
 PLAYER_CLIENTS = ['mweb', 'android', 'web']
 
-# --- LOCAL AGENT SUPPORT -------------------------------------------------------
-# The browser can choose:
-#   1) proxy  -> Toolforge downloads through a proxy supplied by the user
-#   2) local  -> a small agent running on the user's PC downloads through
-#                the user's own IP and sends the finished file back to Toolforge.
-#
-# The SQLite DB is persistent as long as the tool home directory is persistent.
+
 AGENT_DB_PATH = os.environ.get(
     'AGENT_DB_PATH',
     os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agent_jobs.sqlite3')
@@ -157,13 +133,11 @@ def _browser_is_paired(browser_token):
 
 @app.route('/')
 def index():
-    # Skoro nie ma logowania przez przeglądarkę, "zalogowany" = token jest ustawiony w env.
     return render_template('index.html', logged_in=bool(WIKI_ACCESS_TOKEN))
 
 
 @app.route('/check', methods=['POST'])
 def check_license():
-    """Weryfikuje, czy film posiada licencję Creative Commons."""
     url = request.json.get('url')
     if not url:
         return jsonify({'is_cc': False, 'error': 'Missing URL.'})
@@ -207,16 +181,6 @@ def check_license():
 
 @app.route('/upload', methods=['POST'])
 def handle_upload():
-    """
-    Server-side upload path.
-
-    download_mode=proxy:
-        Toolforge downloads through the proxy supplied by the user.
-
-    download_mode=local:
-        The browser should use /api/local/jobs instead. The actual YouTube
-        download is performed by agent.py on the user's computer.
-    """
     if not WIKI_ACCESS_TOKEN:
         return jsonify({'error': 'Brak skonfigurowanego WIKI_ACCESS_TOKEN na serwerze.'}), 401
 
@@ -261,14 +225,12 @@ def handle_upload():
         return jsonify({'error': str(e)}), 500
 
 
-# --- Pairing / local-agent API -------------------------------------------------
-
 @app.route('/api/local/pair/start', methods=['POST'])
 def local_pair_start():
     now = int(time.time())
     pairing_code = f"{secrets.randbelow(1000000):06d}"
     browser_token = secrets.token_urlsafe(32)
-    expires_at = now + 600
+    expires_at = now + 86400
 
     with _db() as conn:
         conn.execute(
@@ -283,7 +245,7 @@ def local_pair_start():
     return jsonify({
         'pairing_code': pairing_code,
         'browser_token': browser_token,
-        'expires_in': 600
+        'expires_in': 86400
     })
 
 
@@ -535,11 +497,6 @@ def agent_job_error(job_id):
 
 
 def _validate_proxy_url(proxy_url):
-    """Waliduje opcjonalne proxy podane przez użytkownika.
-
-    Dopuszczamy tylko HTTP/HTTPS/SOCKS4/SOCKS5. Proxy nie jest zapisywane
-    i nie powinno być logowane, ponieważ może zawierać login/hasło.
-    """
     if not proxy_url:
         return None
 
@@ -553,8 +510,6 @@ def _validate_proxy_url(proxy_url):
     if not parsed.hostname or parsed.port is None:
         raise ValueError("Nieprawidłowy adres proxy. Oczekiwany format: protokół://host:port")
 
-    # Ochrona przed użyciem pola proxy do łączenia się z localhostem / siecią
-    # wewnętrzną serwera (SSRF). Dopuszczamy wyłącznie publiczne adresy IP.
     try:
         resolved = socket.getaddrinfo(parsed.hostname, parsed.port, type=socket.SOCK_STREAM)
     except socket.gaierror:
@@ -585,14 +540,6 @@ def _base_ydl_opts(user_proxy=None):
 
 
 def _extract_with_fallback(url, extra_opts, download, user_proxy=None):
-    """
-    Próba 0: domyślna, wielo-kliencka strategia yt-dlp (bez wymuszania player_client) -
-    dokładnie to, czego używa /check, gdzie działa. yt-dlp sam dobiera i rotuje klientów,
-    co bywa skuteczniejsze przeciwko bot-detection niż sztywne wymuszanie jednego na raz.
-
-    Próby 1+: wymuszone pojedyncze klienty (mweb -> android -> web) jako plan B,
-    na wypadek gdyby domyślna strategia zawiodła.
-    """
     last_error = None
 
     try:
@@ -649,8 +596,6 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
         ext = "ogg"
         info, used_client = _extract_with_fallback(url, extra_opts, download=True, user_proxy=user_proxy)
     elif media_type == 'thumbnail':
-        # ignore_no_formats_error: thumbnail nie potrzebuje odtwarzalnych formatów wideo/audio,
-        # więc nie traktujemy braku formatów jako błąd krytyczny (tak jak w /check).
         extra_opts = {
             'skip_download': True,
             'writethumbnail': True,
@@ -665,7 +610,23 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
     print(f"[info] Użyty klient YouTube: {used_client}")
 
     title_base = info.get('title', 'media')
+    
+    # Podstawowe czyszczenie tytułu
     safe_title = "".join([c for c in title_base if c.isalnum() or c == ' ']).rstrip().replace(" ", "_")
+
+    # DODAJEMY PRZYROSTKI DO NAZWY PLIKU:
+    if media_type == 'frame':
+        s = float(timestamp)
+        mm, ss = divmod(int(s), 60)
+        # Używamy myślnika, aby zapobiec awariom na systemach Windows!
+        safe_title += f"_(frame_{mm}-{ss:02d})"
+    elif media_type == 'audio':
+        safe_title += "_(audio)"
+    elif media_type == 'thumbnail':
+        safe_title += "_(thumbnail)"
+    elif media_type == 'video':
+        safe_title += "_(video)"
+
 
     if media_type == 'frame':
         stream_url = info.get('url')
@@ -690,9 +651,7 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
             )
 
         ext = 'jpg'
-        final_filename = (
-            f"{safe_title}_{str(timestamp).replace('.', '_')}.jpg"
-        )
+        final_filename = f"{safe_title}.jpg"
 
         headers = dict(info.get('http_headers') or {})
         headers.update(format_headers)
@@ -763,8 +722,10 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
         downloaded_file = next((f for f in os.listdir('.') if f.startswith(info['id']) and f.endswith(('.jpg', '.webp', '.png'))), None)
         if not downloaded_file:
             downloaded_file = next((f for f in os.listdir('.') if f.endswith(('.jpg', '.webp', '.png'))), None)
+        
         ext = downloaded_file.split('.')[-1] if downloaded_file else 'jpg'
-        final_filename = f"{safe_title}_thumb.{ext}"
+        final_filename = f"{safe_title}.{ext}"
+        
         if downloaded_file and downloaded_file != final_filename:
             os.replace(downloaded_file, final_filename)
         downloaded_file = final_filename
@@ -773,13 +734,10 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
         downloaded_file = f"{info['id']}.{ext}"
         final_filename = f"{safe_title}.{ext}"
         if os.path.exists(downloaded_file) and downloaded_file != final_filename:
-            # FIX: os.rename -> os.replace, bo na Windows os.rename rzuca
-            # [WinError 183] jeśli plik docelowy już istnieje (np. z poprzedniej,
-            # przerwanej próby). os.replace nadpisuje bezpiecznie.
             os.replace(downloaded_file, final_filename)
             downloaded_file = final_filename
 
-    # Dynamiczny dobór licencji
+
     upload_date = info.get('upload_date', '')
     if upload_date and upload_date >= '20250801':
         license_tag = '{{YouTube CC-BY-4.0}}'
@@ -787,7 +745,6 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
         license_tag = '{{YouTube CC-BY}}'
 
     author = info.get('uploader', 'Unknown')
-    video_description = info.get('description', '')
     tekst = upload_date
     wynik = f"{tekst[:4]}.{tekst[4:6]}.{tekst[6:]}"
 
@@ -798,20 +755,18 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
         seconds = float(timestamp)
         mm, ss = divmod(int(seconds), 60)
         time_label = f"{mm}:{ss:02d}"
-        # FIX: był podwójny "?" (?v=...?t=...), co jest niepoprawnym URL-em.
-        # Drugi parametr zapytania musi być po "&", nie po kolejnym "?".
         timestamped_link = f"[https://www.youtube.com/watch?v={info['id']}&t={int(seconds)}s {time_label}]"
-        source_field = f"""Youtube Video: "{safe_title}" {timestamped_link}"""
-        top_line = f"""Frame at {time_label} from Youtube video "{safe_title}" """
+        source_field = f"""Youtube Video: "{title_base}" {timestamped_link}"""
+        top_line = f"""Frame at {time_label} from Youtube video "{title_base}" """
     elif media_type == 'audio':
         source_field = url
-        top_line = f"""Audio  from Youtube video "{safe_title}" """
+        top_line = f"""Audio  from Youtube video "{title_base}" """
     elif media_type == 'thumbnail':
         source_field = url
-        top_line = f"""Thumbnail from Youtube video "{safe_title}" """
-    else:  # video
+        top_line = f"""Thumbnail from Youtube video "{title_base}" """
+    else:  
         source_field = url
-        top_line = f"""Video from Youtube video "{safe_title}" """
+        top_line = f"""Video from Youtube video "{title_base}" """
 
     full_description = f"{top_line}"
 
@@ -834,7 +789,6 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
 
 
 def upload_to_commons(file_path, title, description, comment):
-    # WAŻNE: podmień "ToolforgeUser" na prawdziwy kontakt (email / stronę użytkownika na Commons).
     headers = {
         'Authorization': f"Bearer {WIKI_ACCESS_TOKEN}",
         'User-Agent': 'YouTubeToCommonsLocal/1.0 (Contact: ToolforgeUser)'
@@ -870,8 +824,6 @@ def upload_to_commons(file_path, title, description, comment):
 
 
 if __name__ == '__main__':
-    # FIX: debug=False domyślnie (bezpieczeństwo w produkcji) + port z env PORT (Render go wymaga).
-    # Do lokalnego dev możesz ustawić FLASK_DEBUG=1 w env, żeby wrócić do trybu debug.
     port = int(os.environ.get('PORT', 5000))
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
     app.run(debug=debug_mode, use_reloader=False, host='0.0.0.0', port=port)
