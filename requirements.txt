@@ -2,3 +2,5 @@ Flask>=3.0
 requests>=2.31
 yt-dlp
 gunicorn
+requests-oauthlib
+werkzeug
