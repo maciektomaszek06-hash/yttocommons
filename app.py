@@ -97,7 +97,7 @@ def login():
     session['oauth_state'] = state
     return redirect(authorization_url)
 
-@app.route('/callback')
+@app.route('/oauth-callback')
 def callback():
     try:
         client = OAuth2Session(CLIENT_ID, state=session.get('oauth_state'))
