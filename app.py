@@ -473,9 +473,9 @@ def download_media(url, media_type, timestamp=None, user_proxy=None):
             downloaded_file = final_filename
 
     upload_date = info.get('upload_date', '')
-    license_tag = '{{YouTube CC-BY-4.0}}' if upload_date and upload_date >= '20250801' else '{{YouTube CC-BY}}'
+    license_tag = '{{YouTube CC-BY 4.0}}' if upload_date and upload_date >= '20250801' else '{{YouTube CC-BY}}'
     author = info.get('uploader', 'Unknown')
-    wynik = f"{upload_date[:4]}.{upload_date[4:6]}.{upload_date[6:]}" if upload_date else ""
+    wynik = f".{upload_date[4:6]}.{upload_date[6:]}.{upload_date[:4]}" if upload_date else ""
 
     if media_type == 'frame':
         seconds = float(timestamp)
