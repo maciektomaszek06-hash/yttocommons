@@ -86,8 +86,13 @@ def _init_agent_db():
             )
         """)
         # Dodanie nowych kolumn jeśli nie istnieją
+       # Dodanie nowych kolumn jeśli nie istnieją
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN custom_license TEXT")
+        except sqlite3.OperationalError:
+            pass
+            
+        try:
             conn.execute("ALTER TABLE jobs ADD COLUMN categories TEXT")
         except sqlite3.OperationalError:
             pass
