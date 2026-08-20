@@ -26,6 +26,7 @@
         .instructions ol { margin:8px 0 0 22px; padding:0; }
         code { background:#eee; padding:2px 5px; }
         #pairing-info { margin-top: 15px; text-align: center; }
+        .suggestion-item:hover { background: #e9ecef; }
     </style>
     <script src="https://www.youtube.com/iframe_api"></script>
 </head>
@@ -46,6 +47,13 @@
             <div>
                 <label for="yt_url">YouTube URL:</label><br>
                 <input type="text" id="yt_url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off">
+                
+                <div style="margin-bottom: 15px;">
+                    <input type="checkbox" id="bypass_license"> 
+                    <label for="bypass_license" style="font-size: 14px; cursor: pointer;">Bypass CC check (I have a valid license template)</label>
+                    <input type="text" id="custom_license" placeholder="e.g. {{PD-USGov}}" style="display: none; margin-top: 5px;">
+                </div>
+
                 <button onclick="checkLicense()">Check License</button>
             </div>
 
@@ -97,6 +105,12 @@
             <div id="status"></div>
             
             <div id="controls">
+                <div style="margin-bottom: 20px; position: relative;">
+                    <label for="commons_categories" style="font-weight:bold;">Categories (comma separated):</label><br>
+                    <input type="text" id="commons_categories" placeholder="Type to search categories..." autocomplete="off" onkeyup="searchCategories(this.value)">
+                    <div id="category_suggestions" style="position: absolute; background: white; border: 1px solid #ccc; width: 100%; max-height: 180px; overflow-y: auto; display: none; z-index: 1000; box-shadow: 0px 4px 6px rgba(0,0,0,0.1);"></div>
+                </div>
+
                 <button onclick="sendMedia('audio')">Send Audio (Ogg)</button>
                 <button onclick="sendMedia('video')">Send Video (WebM)</button>
                 <button onclick="sendMedia('thumbnail')">Send Thumbnail</button>
@@ -116,6 +130,52 @@
         let ytPlayer;
         let currentVideoId = '';
         let browserToken = localStorage.getItem('yttocommons_browser_token') || '';
+        let searchTimeout = null;
+
+        // Pokaż/ukryj pole własnej licencji
+        document.getElementById('bypass_license')?.addEventListener('change', function() {
+            document.getElementById('custom_license').style.display = this.checked ? 'block' : 'none';
+        });
+
+        // Wyszukiwanie kategorii na żywo z Wikimedia Commons
+        async function searchCategories(query) {
+            clearTimeout(searchTimeout);
+            const suggBox = document.getElementById('category_suggestions');
+            const lastWord = query.split(',').pop().trim();
+            
+            if (lastWord.length < 2) {
+                suggBox.style.display = 'none';
+                return;
+            }
+
+            searchTimeout = setTimeout(async () => {
+                try {
+                    const res = await fetch(`https://commons.wikimedia.org/w/api.php?action=opensearch&format=json&namespace=14&search=${encodeURIComponent(lastWord)}&origin=*`);
+                    const data = await res.json();
+                    const suggestions = data[1];
+
+                    if (suggestions.length > 0) {
+                        suggBox.innerHTML = suggestions.map(s => {
+                            const catName = s.replace('Category:', '');
+                            return `<div class="suggestion-item" style="padding: 8px; cursor: pointer; border-bottom: 1px solid #eee;" onclick="addCategory('${catName.replace(/'/g, "\\'")}')">${catName}</div>`;
+                        }).join('');
+                        suggBox.style.display = 'block';
+                    } else {
+                        suggBox.style.display = 'none';
+                    }
+                } catch (e) {}
+            }, 300); // Małe opóźnienie, żeby nie spamować API
+        }
+
+        function addCategory(catName) {
+            const input = document.getElementById('commons_categories');
+            let parts = input.value.split(',');
+            parts.pop(); // usuń aktualnie wpisywany fragment
+            parts.push(' ' + catName);
+            input.value = parts.join(',').trim() + ', ';
+            document.getElementById('category_suggestions').style.display = 'none';
+            input.focus();
+        }
 
         function toggleMode() {
             document.getElementById('proxy_details').classList.remove('active-mode');
@@ -189,6 +249,7 @@
         async function checkLicense() {
             const url = document.getElementById('yt_url').value;
             const status = document.getElementById('status');
+            const manualLicense = document.getElementById('bypass_license').checked;
             
             if (!url) {
                 alert("Please paste a YouTube link!");
@@ -205,12 +266,12 @@
                 const res = await fetch('/check', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({url: url})
+                    body: JSON.stringify({url: url, manual_license: manualLicense})
                 });
                 const data = await res.json();
                 
                 if (data.is_cc) {
-                    status.innerHTML = `<span class="success">✔ License OK! Title: ${data.title}</span>`;
+                    status.innerHTML = `<span class="success">✔ Ready! Title: ${data.title}</span>`;
                     currentVideoId = data.id;
                     document.getElementById('controls').style.display = 'block';
                     document.getElementById('mode-selector').style.display = 'block';
@@ -227,6 +288,9 @@
             const status = document.getElementById('status');
             const modeProxy = document.getElementById('mode_proxy').checked;
             
+            const customLicense = document.getElementById('custom_license').value;
+            const categories = document.getElementById('commons_categories').value;
+            
             if (!confirm(`Send this ${type} to Wikimedia Commons?`)) return;
 
             status.innerHTML = `Initiating upload of ${type}... Please wait.`;
@@ -238,6 +302,8 @@
                 formData.append('url', url);
                 formData.append('type', type);
                 formData.append('download_mode', 'proxy');
+                formData.append('custom_license', customLicense);
+                formData.append('categories', categories);
                 
                 const proxyUrl = document.getElementById('proxy_url').value;
                 if (proxyUrl) formData.append('proxy', proxyUrl);
@@ -271,7 +337,13 @@
                             'Content-Type': 'application/json',
                             'X-Browser-Token': browserToken
                         },
-                        body: JSON.stringify({ url: url, type: type, timestamp: timestamp })
+                        body: JSON.stringify({ 
+                            url: url, 
+                            type: type, 
+                            timestamp: timestamp,
+                            custom_license: customLicense,
+                            categories: categories
+                        })
                     });
                     const data = await res.json();
                     
@@ -315,6 +387,7 @@
                 }
             }, 3000);
         }
+
         function showPlayer() {
             document.getElementById('player-container').style.display = 'block';
             if (!ytPlayer && currentVideoId) {
