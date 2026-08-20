@@ -211,7 +211,7 @@
             }
         }
 
-        async function sendMedia(type, timestamp = null) {
+       async function sendMedia(type, timestamp = null) {
             const url = document.getElementById('yt_url').value;
             const status = document.getElementById('status');
             const modeProxy = document.getElementById('mode_proxy').checked;
@@ -243,10 +243,13 @@
                     }
                 } catch (e) {
                     status.innerHTML = `<span class="error">✖ Connection error: ${e.message}</span>`;
+                } finally {
+                    document.getElementById('controls').style.display = 'block';
                 }
             } else {
                 if (!browserToken) {
                     status.innerHTML = `<span class="error">✖ No connection. Please pair local agent first.</span>`;
+                    document.getElementById('controls').style.display = 'block';
                     return;
                 }
                 
@@ -263,15 +266,16 @@
                     
                     if (data.error) {
                         status.innerHTML = `<span class="error">✖ Local agent error: ${data.error}</span>`;
+                        document.getElementById('controls').style.display = 'block';
                         return;
                     }
                     
                     status.innerHTML = 'Job sent to local agent. Waiting for upload...';
-                    
                     launchAgent();
                     pollJobStatus(data.job_id);
                 } catch (e) {
                     status.innerHTML = `<span class="error">✖ Connection error: ${e.message}</span>`;
+                    document.getElementById('controls').style.display = 'block';
                 }
             }
         }
@@ -288,9 +292,11 @@
                     if (data.status === 'done') {
                         clearInterval(interval);
                         statusDiv.innerHTML = `<span class="success">✔ Upload successful via Local Agent! <a href="${data.commons_url}" target="_blank">View on Commons</a></span>`;
+                        document.getElementById('controls').style.display = 'block';
                     } else if (data.status === 'error') {
                         clearInterval(interval);
                         statusDiv.innerHTML = `<span class="error">✖ Local agent failed: ${data.error}</span>`;
+                        document.getElementById('controls').style.display = 'block';
                     } else if (data.status === 'processing') {
                         statusDiv.innerHTML = 'Local agent is downloading/uploading...';
                     }
@@ -298,7 +304,6 @@
                 }
             }, 3000);
         }
-
         function showPlayer() {
             document.getElementById('player-container').style.display = 'block';
             if (!ytPlayer && currentVideoId) {
