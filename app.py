@@ -497,7 +497,7 @@ def download_media(url, media_type, timestamp=None, user_proxy=None, custom_lice
     # Przygotowanie kategorii
     cat_text = ""
     if categories:
-        cat_list = [c.strip() for c in categories.split(",") if c.strip()]
+        cat_list = [c.strip() for c in categories.split(";") if c.strip()]
         for c in cat_list:
             if not c.lower().startswith("category:"):
                 c = f"Category:{c}"
