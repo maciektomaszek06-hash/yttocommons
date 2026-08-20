@@ -22,10 +22,6 @@ PROTOCOL_NAME = "yttocommons-agent"
 
 
 def get_ffmpeg_path():
-    """
-    Return the bundled FFmpeg executable path when running as a PyInstaller EXE.
-    In source mode, fall back to ffmpeg from PATH.
-    """
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).resolve().parent
         candidates = [
@@ -39,10 +35,6 @@ def get_ffmpeg_path():
 
 
 def ensure_url_protocol_registered():
-    """
-    On Windows, register the custom URL protocol automatically on first launch.
-    This removes the need for a separate BAT file or manual setup.
-    """
     if platform.system().lower() != "windows":
         return
 
@@ -60,13 +52,6 @@ def ensure_url_protocol_registered():
 
 
 def install_url_protocol():
-    """
-    Register yttocommons-agent:// links on Windows so the website can launch
-    the local agent after a local job is created.
-
-    Works best when agent.py is packaged as agent.exe. For source usage, it
-    registers the current Python interpreter + this script.
-    """
     if platform.system().lower() != "windows":
         print("Automatic protocol registration is currently supported only on Windows.")
         return
@@ -152,9 +137,13 @@ def extract_with_fallback(url, extra_opts, download):
     raise last or RuntimeError("yt-dlp failed")
 
 
-def build_commons_text(info, url, media_type, filename, timestamp=None):
+def build_commons_text(info, url, media_type, filename, timestamp=None, custom_license="", categories=""):
     upload_date = info.get("upload_date", "") or ""
-    license_tag = "{{YouTube CC-BY-4.0}}" if upload_date >= "20250801" else "{{YouTube CC-BY}}"
+    
+    if custom_license:
+        license_tag = custom_license if custom_license.startswith("{{") else f"{{{{{custom_license}}}}}"
+    else:
+        license_tag = "{{YouTube CC-BY-4.0}}" if upload_date >= "20250801" else "{{YouTube CC-BY}}"
 
     if len(upload_date) == 8:
         date_text = f"{upload_date[:4]}.{upload_date[4:6]}.{upload_date[6:]}"
@@ -163,6 +152,17 @@ def build_commons_text(info, url, media_type, filename, timestamp=None):
 
     author = info.get("uploader", "Unknown")
     clean = os.path.splitext(filename)[0]
+
+    # Przygotowanie kategorii z bazy
+    cat_text = ""
+    if categories:
+        cat_list = [c.strip() for c in categories.split(",") if c.strip()]
+        for c in cat_list:
+            if not c.lower().startswith("category:"):
+                c = f"Category:{c}"
+            cat_text += f"[[{c}]]\n"
+    if not cat_text:
+        cat_text = "[[Category:Uploaded with Youtube to Wikimedia Commons]]"
 
     if media_type == "frame":
         seconds = float(timestamp)
@@ -193,8 +193,8 @@ def build_commons_text(info, url, media_type, filename, timestamp=None):
         "}}\n"
         "== {{int:license-header}} ==\n"
         f"{license_tag}\n"
-        "{{LicenseReview}}"
-        "[[Category:Uploaded with Youtube to Wikimedia Commons]]"
+        "{{LicenseReview}}\n\n"
+        f"{cat_text}"
     )
 
     label = {
@@ -367,8 +367,10 @@ def process_job(job):
                 final.unlink()
             path.replace(final)
 
+        # Pobieranie modyfikacji ze słownika 'job'
         description, comment = build_commons_text(
-            info, url, media_type, filename, timestamp
+            info, url, media_type, filename, timestamp,
+            job.get("custom_license", ""), job.get("categories", "")
         )
 
         return final, filename, description, comment, workdir, client
@@ -406,8 +408,6 @@ def run(protocol_data=None):
     cfg = load_config()
     protocol_data = protocol_data or {}
 
-    # UWAGA: Tutaj jest zhardkodowany adres Twojego serwera, 
-    # tak jak wczesniej prosiles, aby ominac pytanie uzytkownika!
     server = (
         protocol_data.get("server")
         or cfg.get("server")
@@ -456,8 +456,13 @@ def run(protocol_data=None):
                         timeout=600,
                     )
 
-                result.raise_for_status()
-                print("Done:", result.json().get("url"))
+                if result.status_code == 200 and result.json().get('error'):
+                    # Prawidłowa obsługa błędu wyrzuconego przez Wikimedia Commons (zamienionego na status 200 przez nasz serwer)
+                    print(f"Server rejected the upload: {result.json().get('error')}")
+                else:
+                    result.raise_for_status()
+                    print("Done:", result.json().get("url"))
+                
                 shutil.rmtree(workdir, ignore_errors=True)
 
             except Exception as exc:
@@ -473,7 +478,6 @@ def run(protocol_data=None):
                     pass
 
         except requests.exceptions.HTTPError as exc:
-            # NOWY BLOK OBRONNY PRZED BŁĘDEM 401
             if exc.response is not None and exc.response.status_code == 401:
                 print("\n" + "="*50)
                 print("[!] BŁĄD: Twoja sesja parowania wygasła lub jest nieprawidłowa.")
