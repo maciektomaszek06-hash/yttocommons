@@ -536,17 +536,33 @@ def upload_to_commons(file_path, title, description, comment, access_token):
         'Authorization': f"Bearer {access_token}",
         'User-Agent': 'YouTubeToCommons/1.2 (Contact: Twój_Kontakt)'
     }
+    
+    # 1. Pobieranie biletu (tokena) z obsługą błędów API
     res = requests.get(API_URL, params={'action': 'query', 'meta': 'tokens', 'format': 'json'}, headers=headers)
-    csrf_token = res.json()['query']['tokens']['csrftoken']
+    data = res.json()
+    
+    if 'error' in data:
+        raise Exception(f"Wikimedia API Error: {data['error'].get('info', str(data['error']))}")
+    if 'query' not in data:
+        raise Exception(f"Unexpected response from Wikimedia: {str(data)}")
+        
+    csrf_token = data['query']['tokens']['csrftoken']
 
+    # 2. Wysyłanie pliku z dokładnym sprawdzaniem odpowiedzi
     with open(file_path, 'rb') as f:
         files = {'file': (title, f, 'multipart/form-data')}
-        data = {'action': 'upload', 'filename': title, 'text': description, 'comment': comment, 'token': csrf_token, 'format': 'json', 'ignorewarnings': 1}
-        response = requests.post(API_URL, files=files, data=data, headers=headers)
+        payload = {'action': 'upload', 'filename': title, 'text': description, 'comment': comment, 'token': csrf_token, 'format': 'json', 'ignorewarnings': 1}
+        
+        response = requests.post(API_URL, files=files, data=payload, headers=headers)
         result = response.json()
+        
         if 'upload' in result and result['upload']['result'] == 'Success':
             return result['upload']['imageinfo']['descriptionurl']
-        raise Exception(str(result))
+        
+        if 'error' in result:
+            raise Exception(f"Wikimedia Upload Failed: {result['error'].get('info', str(result['error']))}")
+            
+        raise Exception(f"Unknown API error: {str(result)}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
