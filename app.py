@@ -514,11 +514,14 @@ def download_media(url, media_type, timestamp=None, user_proxy=None, custom_lice
         source_field = f"""Youtube Video: "{title_base}" [https://www.youtube.com/watch?v={info['id']}&t={int(seconds)}s {mm}:{ss:02d}]"""
     else:  
         source_field = url
+    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+    info_dict = ydl.extract_info(video, download=False)
+    video_title = info_dict.get('title', None)
 
     description = (
         "== {{int:filedesc}} ==\n"
         "{{Information\n"
-        f"|description=Media from Youtube video \"{title_base}\"\n"
+        f"|description=Media from Youtube video \"{video_title}\"\n"
         f"|date={wynik}\n"
         f"|source={source_field}\n"
         f"|author={author}\n"
