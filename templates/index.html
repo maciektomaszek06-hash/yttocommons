@@ -132,6 +132,44 @@
         let browserToken = localStorage.getItem('yttocommons_browser_token') || '';
         let searchTimeout = null;
 
+        // Wspólna obsługa odpowiedzi API. Po wygaśnięciu sesji/JWT
+        // czyścimy token lokalnego agenta i wymuszamy ponowne logowanie.
+        async function apiJson(response) {
+            let data = {};
+            try {
+                data = await response.json();
+            } catch (e) {
+                data = {};
+            }
+
+            const errorText = [
+                data.httpReason || '',
+                typeof data.error === 'string' ? data.error : JSON.stringify(data.error || '')
+            ].join(' ').toLowerCase();
+
+            if (response.status === 401 || data.reauth_required === true || errorText.includes('jwt is expired')) {
+                localStorage.removeItem('yttocommons_browser_token');
+                browserToken = '';
+                window.location.replace(data.login_url || '/login');
+                return null;
+            }
+
+            return data;
+        }
+
+        // Backend przekazuje liczbę sekund pozostałych do końca sesji.
+        // Gdy czas minie, użytkownik trafia ponownie do logowania.
+        {% if logged_in %}
+        const SESSION_EXPIRES_IN = {{ session_expires_in|default(0)|int }};
+        if (SESSION_EXPIRES_IN > 0) {
+            window.setTimeout(() => {
+                localStorage.removeItem('yttocommons_browser_token');
+                browserToken = '';
+                window.location.replace('/login');
+            }, (SESSION_EXPIRES_IN + 1) * 1000);
+        }
+        {% endif %}
+
         // Pokaż/ukryj pole własnej licencji
         document.getElementById('bypass_license')?.addEventListener('change', function() {
             document.getElementById('custom_license').style.display = this.checked ? 'block' : 'none';
@@ -141,7 +179,7 @@
         async function searchCategories(query) {
             clearTimeout(searchTimeout);
             const suggBox = document.getElementById('category_suggestions');
-            const lastWord = query.split(',').pop().trim();
+            const lastWord = query.split(';').pop().trim();
             
             if (lastWord.length < 2) {
                 suggBox.style.display = 'none';
@@ -169,10 +207,10 @@
 
         function addCategory(catName) {
             const input = document.getElementById('commons_categories');
-            let parts = input.value.split(',');
+            let parts = input.value.split(';');
             parts.pop(); // usuń aktualnie wpisywany fragment
             parts.push(' ' + catName);
-            input.value = parts.join(',').trim() + ', ';
+            input.value = parts.join(';').trim() + '; ';
             document.getElementById('category_suggestions').style.display = 'none';
             input.focus();
         }
@@ -205,7 +243,8 @@
 
             try {
                 const response = await fetch("/api/local/pair/start", {method:"POST"});
-                const data = await response.json();
+                const data = await apiJson(response);
+                if (!data) return;
                 
                 if (!response.ok) {
                     info.innerHTML = `<span class="error">${data.error || "Pairing failed."}</span>`;
@@ -235,7 +274,8 @@
                     const response = await fetch("/api/local/pair/status", {
                         headers: {"X-Browser-Token": browserToken}
                     });
-                    const data = await response.json();
+                    const data = await apiJson(response);
+                    if (!data) return;
                     if (data.paired) {
                         document.getElementById("pairing-info").innerHTML = '<span class="success">✔ Local agent paired successfully!</span>';
                         document.getElementById("pair-btn").disabled = false;
@@ -311,7 +351,8 @@
 
                 try {
                     const res = await fetch('/upload', { method: 'POST', body: formData });
-                    const data = await res.json();
+                    const data = await apiJson(res);
+                    if (!data) return;
                     
                     if (data.success) {
                         status.innerHTML = `<span class="success">✔ Upload successful! <a href="${data.url}" target="_blank">View on Commons</a></span>`;
@@ -345,7 +386,8 @@
                             categories: categories
                         })
                     });
-                    const data = await res.json();
+                    const data = await apiJson(res);
+                    if (!data) return;
                     
                     if (data.error) {
                         status.innerHTML = `<span class="error">✖ Local agent error: ${data.error}</span>`;
@@ -370,7 +412,8 @@
                     const res = await fetch(`/api/local/jobs/${jobId}`, {
                         headers: { 'X-Browser-Token': browserToken }
                     });
-                    const data = await res.json();
+                    const data = await apiJson(res);
+                    if (!data) { clearInterval(interval); return; }
                     
                     if (data.status === 'done') {
                         clearInterval(interval);
