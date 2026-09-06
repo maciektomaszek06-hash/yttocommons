@@ -228,7 +228,20 @@ def logout():
 
 @app.route('/')
 def index():
-    return render_template('index.html', logged_in=bool(_get_valid_access_token()))
+    access_token = _get_valid_access_token()
+    expires_in = 0
+    if access_token:
+        try:
+            expires_at = float(session.get('oauth_expires_at', 0))
+            expires_in = max(0, int(expires_at - time.time()))
+        except (TypeError, ValueError):
+            expires_in = 0
+
+    return render_template(
+        'index.html',
+        logged_in=bool(access_token),
+        session_expires_in=expires_in,
+    )
 
 # --- OBSŁUGA APLIKACJI ---
 
