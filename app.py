@@ -9,6 +9,7 @@ import secrets
 import json
 import tempfile
 import uuid
+from datetime import timedelta
 from urllib.parse import urlparse
 import requests
 import yt_dlp
@@ -20,6 +21,13 @@ app = Flask(__name__)
 # ProxyFix naprawia linki powrotne (callback) działające za serwerami Toolforge
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'strong_random_session_secret_for_local_use')
+
+# Maksymalny czas jednego logowania. Domyślnie 1 godzina.
+# Na serwerze możesz ustawić np. AUTH_SESSION_SECONDS=7200 dla 2 godzin.
+AUTH_SESSION_SECONDS = int(os.environ.get('AUTH_SESSION_SECONDS', '3600'))
+app.permanent_session_lifetime = timedelta(seconds=AUTH_SESSION_SECONDS)
+# Sesja ma wygasać bez przesuwania terminu przy każdym żądaniu.
+app.config['SESSION_REFRESH_EACH_REQUEST'] = False
 
 API_URL = "https://commons.wikimedia.org/w/api.php"
 
@@ -99,6 +107,73 @@ def _init_agent_db():
 
 _init_agent_db()
 
+
+class WikimediaAuthExpired(Exception):
+    """Token OAuth Wikimedia wygasł i wymagane jest ponowne logowanie."""
+
+
+def _clear_auth_session():
+    session.pop('oauth_token', None)
+    session.pop('oauth_expires_at', None)
+    session.pop('oauth_state', None)
+
+
+def _reauth_response():
+    return jsonify({
+        'error': 'Sesja Wikimedia wygasła. Zaloguj się ponownie.',
+        'reauth_required': True,
+        'login_url': url_for('login'),
+    }), 401
+
+
+def _get_valid_access_token():
+    access_token = session.get('oauth_token')
+    if not access_token:
+        return None
+
+    expires_at = session.get('oauth_expires_at')
+    if expires_at is not None:
+        try:
+            if time.time() >= float(expires_at):
+                _clear_auth_session()
+                return None
+        except (TypeError, ValueError):
+            _clear_auth_session()
+            return None
+
+    return access_token
+
+
+def _normalize_categories(value):
+    """Jeśli frontend wysyła tablicę kategorii, łączy ją średnikami."""
+    if value is None:
+        return ''
+    if isinstance(value, (list, tuple)):
+        return '; '.join(str(item).strip() for item in value if str(item).strip())
+    return str(value).strip()
+
+
+def _json_or_empty(response):
+    try:
+        return response.json()
+    except ValueError:
+        return {}
+
+
+def _raise_if_auth_expired(response, payload):
+    reason = ''
+    if isinstance(payload, dict):
+        reason = str(payload.get('httpReason', ''))
+        error = payload.get('error')
+        if isinstance(error, dict):
+            reason += ' ' + str(error.get('info', ''))
+        elif error:
+            reason += ' ' + str(error)
+
+    if response.status_code == 401 or 'jwt is expired' in reason.lower():
+        raise WikimediaAuthExpired('Sesja Wikimedia wygasła. Zaloguj się ponownie.')
+
+
 # --- SYSTEM LOGOWANIA ---
 
 @app.route('/login')
@@ -112,21 +187,48 @@ def login():
 def callback():
     try:
         client = OAuth2Session(CLIENT_ID, state=session.get('oauth_state'))
-        token = client.fetch_token(TOKEN_URL, client_secret=CLIENT_SECRET, authorization_response=request.url)
+        token = client.fetch_token(
+            TOKEN_URL,
+            client_secret=CLIENT_SECRET,
+            authorization_response=request.url,
+        )
+
+        now = int(time.time())
+        configured_expires_at = now + AUTH_SESSION_SECONDS
+        oauth_expires_in = token.get('expires_in')
+        if oauth_expires_in is not None:
+            try:
+                configured_expires_at = min(
+                    configured_expires_at,
+                    now + max(1, int(float(oauth_expires_in))),
+                )
+            except (TypeError, ValueError):
+                pass
+
+        oauth_expires_at = token.get('expires_at')
+        if oauth_expires_at is not None:
+            try:
+                configured_expires_at = min(configured_expires_at, int(float(oauth_expires_at)))
+            except (TypeError, ValueError):
+                pass
+
+        session.permanent = True
         session['oauth_token'] = token['access_token']
+        session['oauth_expires_at'] = configured_expires_at
     except Exception as e:
         print(f"OAuth Callback Error: {e}")
+        _clear_auth_session()
         return "Błąd logowania. Spróbuj ponownie."
     return redirect(url_for('index'))
 
 @app.route('/logout')
 def logout():
-    session.pop('oauth_token', None)
+    _clear_auth_session()
     return redirect(url_for('index'))
 
 @app.route('/')
 def index():
-    return render_template('index.html', logged_in='oauth_token' in session)
+    return render_template('index.html', logged_in=bool(_get_valid_access_token()))
 
 # --- OBSŁUGA APLIKACJI ---
 
@@ -177,9 +279,9 @@ def check_license():
 
 @app.route('/upload', methods=['POST'])
 def handle_upload():
-    access_token = session.get('oauth_token')
+    access_token = _get_valid_access_token()
     if not access_token:
-        return jsonify({'error': 'Nie jesteś zalogowany.'}), 401
+        return _reauth_response()
 
     yt_url = request.form.get('url')
     media_type = request.form.get('type')
@@ -187,7 +289,7 @@ def handle_upload():
     download_mode = (request.form.get('download_mode') or 'proxy').strip().lower()
     user_proxy = request.form.get('proxy', '').strip() or None
     custom_license = request.form.get('custom_license', '').strip()
-    categories = request.form.get('categories', '').strip()
+    categories = _normalize_categories(request.form.get('categories', ''))
 
     if download_mode != 'proxy':
         return jsonify({'error': 'Invalid download mode.'}), 400
@@ -200,20 +302,25 @@ def handle_upload():
         if os.path.exists(downloaded_file):
             os.remove(downloaded_file)
         return jsonify({'success': True, 'url': commons_url})
+    except WikimediaAuthExpired:
+        _clear_auth_session()
+        return _reauth_response()
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/local/pair/start', methods=['POST'])
 def local_pair_start():
-    access_token = session.get('oauth_token')
+    access_token = _get_valid_access_token()
     if not access_token:
-        return jsonify({'error': 'Nie jesteś zalogowany.'}), 401
+        return _reauth_response()
 
     now = int(time.time())
     pairing_code = f"{secrets.randbelow(1000000):06d}"
     browser_token = secrets.token_urlsafe(32)
-    expires_at = now + 86400
+    oauth_expires_at = int(session.get('oauth_expires_at', now + AUTH_SESSION_SECONDS))
+    expires_at = min(now + 86400, oauth_expires_at)
+    expires_in = max(1, expires_at - now)
 
     with _db() as conn:
         conn.execute(
@@ -225,10 +332,13 @@ def local_pair_start():
             (pairing_code, browser_token, access_token, now, expires_at)
         )
 
-    return jsonify({'pairing_code': pairing_code, 'browser_token': browser_token, 'expires_in': 86400})
+    return jsonify({'pairing_code': pairing_code, 'browser_token': browser_token, 'expires_in': expires_in})
 
 @app.route('/api/local/pair/status', methods=['GET'])
 def local_pair_status():
+    if not _get_valid_access_token():
+        return _reauth_response()
+
     browser_token = request.headers.get('X-Browser-Token', '').strip()
     now = int(time.time())
     with _db() as conn:
@@ -263,9 +373,9 @@ def agent_pair():
 
 @app.route('/api/local/jobs', methods=['POST'])
 def local_create_job():
-    access_token = session.get('oauth_token')
+    access_token = _get_valid_access_token()
     if not access_token:
-        return jsonify({'error': 'Nie jesteś zalogowany.'}), 401
+        return _reauth_response()
 
     browser_token = request.headers.get('X-Browser-Token', '').strip()
     data = request.get_json(silent=True) or {}
@@ -273,7 +383,7 @@ def local_create_job():
     media_type = str(data.get('type', '')).strip()
     timestamp = data.get('timestamp')
     custom_license = str(data.get('custom_license', '')).strip()
-    categories = str(data.get('categories', '')).strip()
+    categories = _normalize_categories(data.get('categories', ''))
 
     now = int(time.time())
     job_id = uuid.uuid4().hex
@@ -291,11 +401,19 @@ def local_create_job():
 
 @app.route('/api/local/jobs/<job_id>', methods=['GET'])
 def local_job_status(job_id):
+    if not _get_valid_access_token():
+        return _reauth_response()
+
     browser_token = request.headers.get('X-Browser-Token', '').strip()
     with _db() as conn:
         row = conn.execute("SELECT id, status, error, commons_url FROM jobs WHERE id = ? AND browser_token = ?", (job_id, browser_token)).fetchone()
     if not row:
         return jsonify({'error': 'Job not found.'}), 404
+
+    if row['status'] == 'error' and (row['error'] or '').startswith('AUTH_EXPIRED:'):
+        _clear_auth_session()
+        return _reauth_response()
+
     return jsonify(dict(row))
 
 def _bearer_token():
@@ -365,6 +483,18 @@ def agent_job_result(job_id):
         with _db() as conn:
             conn.execute("UPDATE jobs SET status = 'done', commons_url = ?, updated_at = ? WHERE id = ?", (commons_url, now, job_id))
         return jsonify({'success': True, 'url': commons_url})
+    except WikimediaAuthExpired as e:
+        with _db() as conn:
+            conn.execute(
+                "UPDATE jobs SET status = 'error', error = ?, updated_at = ? WHERE id = ?",
+                (f"AUTH_EXPIRED: {e}", now, job_id),
+            )
+            conn.execute(
+                "UPDATE pairings SET expires_at = ? WHERE agent_token = ?",
+                (now, agent_token),
+            )
+        # Agent dostaje 200, żeby nie nadpisał błędu, a przeglądarka przy pollingu dostanie 401.
+        return jsonify({'error': str(e), 'reauth_required': True}), 200
     except Exception as e:
         with _db() as conn:
             conn.execute("UPDATE jobs SET status = 'error', error = ?, updated_at = ? WHERE id = ?", (str(e), now, job_id))
@@ -512,11 +642,11 @@ def download_media(url, media_type, timestamp=None, user_proxy=None, custom_lice
         seconds = float(timestamp)
         mm, ss = divmod(int(seconds), 60)
         source_field = f"""Youtube Video: "{title_base}" [https://www.youtube.com/watch?v={info['id']}&t={int(seconds)}s {mm}:{ss:02d}]"""
-    else:  
+    else:
         source_field = url
-    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-    info_dict = ydl.extract_info(video, download=False)
-    video_title = info_dict.get('title', None)
+
+    # Tytuł jest już dostępny z yt_dlp w zmiennej title_base.
+    video_title = title_base
 
     description = (
         "== {{int:filedesc}} ==\n"
@@ -539,32 +669,46 @@ def upload_to_commons(file_path, title, description, comment, access_token):
         'Authorization': f"Bearer {access_token}",
         'User-Agent': 'YouTubeToCommons/1.2 (Contact: Twój_Kontakt)'
     }
-    
-    # 1. Pobieranie biletu (tokena) z obsługą błędów API
-    res = requests.get(API_URL, params={'action': 'query', 'meta': 'tokens', 'format': 'json'}, headers=headers)
-    data = res.json()
-    
+
+    # 1. Pobieranie tokena CSRF.
+    res = requests.get(
+        API_URL,
+        params={'action': 'query', 'meta': 'tokens', 'format': 'json'},
+        headers=headers,
+    )
+    data = _json_or_empty(res)
+    _raise_if_auth_expired(res, data)
+
     if 'error' in data:
         raise Exception(f"Wikimedia API Error: {data['error'].get('info', str(data['error']))}")
     if 'query' not in data:
         raise Exception(f"Unexpected response from Wikimedia: {str(data)}")
-        
+
     csrf_token = data['query']['tokens']['csrftoken']
 
-    # 2. Wysyłanie pliku z dokładnym sprawdzaniem odpowiedzi
+    # 2. Wysyłanie pliku z dokładnym sprawdzaniem odpowiedzi.
     with open(file_path, 'rb') as f:
         files = {'file': (title, f, 'multipart/form-data')}
-        payload = {'action': 'upload', 'filename': title, 'text': description, 'comment': comment, 'token': csrf_token, 'format': 'json', 'ignorewarnings': 1}
-        
+        payload = {
+            'action': 'upload',
+            'filename': title,
+            'text': description,
+            'comment': comment,
+            'token': csrf_token,
+            'format': 'json',
+            'ignorewarnings': 1,
+        }
+
         response = requests.post(API_URL, files=files, data=payload, headers=headers)
-        result = response.json()
-        
+        result = _json_or_empty(response)
+        _raise_if_auth_expired(response, result)
+
         if 'upload' in result and result['upload']['result'] == 'Success':
             return result['upload']['imageinfo']['descriptionurl']
-        
+
         if 'error' in result:
             raise Exception(f"Wikimedia Upload Failed: {result['error'].get('info', str(result['error']))}")
-            
+
         raise Exception(f"Unknown API error: {str(result)}")
 
 if __name__ == '__main__':
