@@ -16,7 +16,10 @@ import yt_dlp
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from requests_oauthlib import OAuth2Session
 from werkzeug.middleware.proxy_fix import ProxyFix
-
+_BIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bin')
+if os.path.isdir(_BIN_DIR):
+    os.environ['PATH'] = _BIN_DIR + os.pathsep + os.environ.get('PATH', '')
+    print(f"[bin] Dołączono binarki z: {_BIN_DIR}")
 app = Flask(__name__)
 # ProxyFix naprawia linki powrotne (callback) działające za serwerami Toolforge
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -541,9 +544,11 @@ def _validate_proxy_url(proxy_url):
     if parsed.scheme.lower() not in allowed_schemes:
         raise ValueError("Proxy musi używać http://, https://, socks4:// lub socks5://.")
     return proxy_url
-
 def _base_ydl_opts(user_proxy=None):
     opts = {'nocheckcertificate': True, 'prefer_insecure': True}
+    ffmpeg_exe = os.path.join(_BIN_DIR, 'ffmpeg')
+    if os.path.isfile(ffmpeg_exe):
+        opts['ffmpeg_location'] = ffmpeg_exe
     if os.path.exists(COOKIES_FILE):
         opts['cookiefile'] = COOKIES_FILE
     if user_proxy:
@@ -609,7 +614,8 @@ def download_media(url, media_type, timestamp=None, user_proxy=None, custom_lice
             if video_formats: stream_url = video_formats[-1]['url']
         
         ext, final_filename = 'jpg', f"{safe_title}.jpg"
-        cmd = ['ffmpeg', '-ss', str(timestamp), '-i', stream_url, '-vframes', '1', '-q:v', '2', final_filename, '-y']
+        ffmpeg_exe = os.path.join(_BIN_DIR, 'ffmpeg')
+        cmd = [ffmpeg_exe if os.path.isfile(ffmpeg_exe) else 'ffmpeg', '-ss', str(timestamp), '-i', stream_url, '-vframes', '1', '-q:v', '2', final_filename, '-y']
         subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         downloaded_file = final_filename
     elif media_type == 'thumbnail':
